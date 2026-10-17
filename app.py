@@ -1,6 +1,8 @@
 import os
 import glob
+import random
 import streamlit as st
+from groq import Groq
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
@@ -27,7 +29,7 @@ st.set_page_config(
 )
 
 # Ubah Nama Guru di bawah ini sesuai nama lengkap dan gelar Anda
-NAMA_GURU = "Adighoro."
+NAMA_GURU = "Adighoro"
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
@@ -36,7 +38,6 @@ KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 # ==========================================
 @st.cache_data(show_spinner=False)
 def load_builtin_modules():
-    """Membaca otomatis semua file .pdf yang diunggah guru di repositori GitHub."""
     combined_text = ""
     loaded_files = []
     pdf_files = sorted(glob.glob("*.pdf"))
@@ -65,7 +66,7 @@ Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Tekn
 Tugas utamamu adalah membantu siswa melakukan troubleshooting konfigurasi jaringan (Mikrotik RouterOS, Cisco IOS), administrasi sistem jaringan (Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6.
 
 Aturan Respons dan Pedagogis:
-1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa.
+1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa. Gunakan Bahasa Indonesia yang jelas dan mudah dipahami siswa SMK.
 2. JANGAN langsung memberikan kunci jawaban konfigurasi utuh tanpa penjelasan. Bantu siswa memahami letak kesalahannya (debugging/troubleshooting).
 3. Berikan daftar periksa pengecekan (troubleshooting checklist), misalnya menyarankan perintah `ip address print`, `ip route print`, `ping`, `traceroute`, `systemctl status`, `journalctl -xe`, atau `nginx -t` / `named-checkconf`.
 4. Untuk pertanyaan Subnetting, jelaskan langkah-langkah cara menghitungnya (mulai dari prefix, subnet mask, blok subnet, jumlah host, hingga range IP valid).
@@ -74,85 +75,145 @@ Aturan Respons dan Pedagogis:
 """
 
 # ==========================================
-# 5. FUNGSI ROTASI MODEL & API KEY (ANTI ERROR 429 & 404)
+# 5. BACA & PISAHKAN API KEY GROQ DAN GEMINI OTOMATIS
 # ==========================================
-def generate_ai_response(api_keys_list, contents, system_instruction):
-    # Urutan prioritas: dahulukan model Lite/Flash yang kuota hariannya lebih longgar
-    priority_models = [
-        "gemini-3.1-flash-lite-preview",
-        "gemini-flash-lite-latest",
-        "gemini-3-flash-preview",
-        "gemini-flash-latest",
-        "gemini-3.8-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash"
-    ]
-    
-    last_error = None
+groq_keys = []
+gemini_keys = []
 
-    # Coba setiap API Key yang tersedia
-    for current_key in api_keys_list:
-        client = genai.Client(api_key=current_key)
-        tried_models = set()
-
-        # 1. Coba daftar model prioritas
-        for model_name in priority_models:
-            tried_models.add(model_name)
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.3,
-                    )
-                )
-                return response.text, model_name
-            except Exception as e:
-                last_error = e
-                err_str = str(e)
-                # Jika model tidak ada (404) ATAU kuota model tersebut habis (429), otomatis pindah ke model berikutnya!
-                if any(k in err_str for k in ["404", "NOT_FOUND", "429", "RESOURCE_EXHAUSTED", "quota", "no longer available"]):
-                    continue
-                else:
-                    raise e
-
-        # 2. Jika semua model di atas habis kuotanya, cari model teks lain yang masih aktif di akun Google tersebut
-        try:
-            for m in client.models.list():
-                name = m.name.replace("models/", "")
-                if name in tried_models:
-                    continue
-                if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "image", "embedding", "vision", "audio", "veo", "imagen"]):
-                    try:
-                        response = client.models.generate_content(
-                            model=name,
-                            contents=contents,
-                            config=types.GenerateContentConfig(
-                                system_instruction=system_instruction,
-                                temperature=0.3,
-                            )
-                        )
-                        return response.text, name
-                    except Exception as e2:
-                        last_error = e2
-                        continue
-        except Exception:
-            continue
-
-    raise last_error
-
-# ==========================================
-# 6. BACA API KEY DARI STREAMLIT SECRETS (MENDUKUNG MULTI-KEY)
-# ==========================================
-api_keys = []
 try:
-    if "GEMINI_API_KEY" in st.secrets:
-        raw_keys = st.secrets["GEMINI_API_KEY"]
-        # Mendukung 1 key atau banyak key yang dipisahkan tanda koma
-        api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    for secret_name in ["GROQ_API_KEY", "GEMINI_API_KEY"]:
+        if secret_name in st.secrets:
+            raw_val = st.secrets[secret_name]
+            cleaned = str(raw_val).replace('"', '').replace("'", "").strip()
+            for k in cleaned.split(","):
+                k = k.strip()
+                # Deteksi otomatis berdasarkan awalan kunci agar tidak pernah tertukar
+                if k.startswith("gsk_"):
+                    if k not in groq_keys:
+                        groq_keys.append(k)
+                elif k.startswith("AIza"):
+                    if k not in gemini_keys:
+                        gemini_keys.append(k)
 except Exception:
     pass
+
+# ==========================================
+# 6. FUNGSI HYBRID AI (GROQ + GOOGLE GEMINI)
+# ==========================================
+def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, system_instruction):
+    last_error = None
+
+    # --------------------------------------------------
+    # LAPIS 1: COBA GROQ TERLEBIH DAHULU (CEPAT & KUOTA BESAR)
+    # --------------------------------------------------
+    if groq_key_list:
+        g_keys = list(groq_key_list)
+        random.shuffle(g_keys)
+
+        groq_payload = [{"role": "system", "content": system_instruction}]
+        for m in chat_messages:
+            role = "user" if m["role"] == "user" else "assistant"
+            groq_payload.append({"role": role, "content": m["content"]})
+
+        groq_models = [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "qwen-qwq-32b",
+            "gemma2-9b-it"
+        ]
+
+        for k in g_keys:
+            try:
+                client = Groq(api_key=k)
+                for model_name in groq_models:
+                    try:
+                        completion = client.chat.completions.create(
+                            model=model_name,
+                            messages=groq_payload,
+                            temperature=0.3,
+                            max_tokens=2048,
+                        )
+                        reply_text = completion.choices[0].message.content
+                        if reply_text:
+                            return reply_text, f"Groq ({model_name})"
+                    except Exception as e:
+                        last_error = e
+                        continue
+            except Exception as e:
+                last_error = e
+
+    # --------------------------------------------------
+    # LAPIS 2: JIKA GROQ PENUH/OFFLINE, OTOMATIS PINDAH KE GOOGLE GEMINI
+    # --------------------------------------------------
+    if gemini_key_list:
+        gem_keys = list(gemini_key_list)
+        random.shuffle(gem_keys)
+
+        gemini_contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=f"[INSTRUKSI SISTEM WAJIB DIIKUTI]:\n{system_instruction}\n\nJika paham, jawab pertanyaan siswa berikut sesuai instruksi di atas.")]
+            ),
+            types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Siap, saya RA'BUNG-NET AI akan mematuhi seluruh instruksi tersebut.")]
+            )
+        ]
+
+        for m in chat_messages:
+            role = "user" if m["role"] == "user" else "model"
+            gemini_contents.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part.from_text(text=m["content"])]
+                )
+            )
+
+        gemini_priority = [
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite",
+            "gemma-3-27b-it",
+            "gemma-3-12b-it",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash"
+        ]
+
+        for k in gem_keys:
+            try:
+                client = genai.Client(api_key=k)
+                available = []
+                try:
+                    for m in client.models.list():
+                        name = m.name.replace("models/", "")
+                        if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "image", "embedding", "vision", "audio", "veo", "imagen"]):
+                            available.append(name)
+                except Exception:
+                    pass
+
+                models_to_try = [m for m in gemini_priority if not available or m in available]
+                for m in available:
+                    if m not in models_to_try:
+                        models_to_try.append(m)
+                if not models_to_try:
+                    models_to_try = gemini_priority
+
+                for model_name in models_to_try:
+                    try:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=gemini_contents,
+                            config=types.GenerateContentConfig(temperature=0.3)
+                        )
+                        if response and response.text:
+                            return response.text, f"Google ({model_name})"
+                    except Exception as e:
+                        last_error = e
+                        continue
+            except Exception as e:
+                last_error = e
+
+    raise last_error
 
 # ==========================================
 # 7. SIDEBAR: LOGO SEKOLAH & INFORMASI KARYA
@@ -174,6 +235,15 @@ with st.sidebar:
             st.markdown(f"- 📄 `{nama_file}`")
     else:
         st.info("Menggunakan Kurikulum Standar TJKT (Mikrotik, Cisco, Linux Debian/Ubuntu, & Subnetting).")
+
+    # Indikator Mesin AI yang Aktif
+    active_engines = []
+    if groq_keys:
+        active_engines.append("Groq LPU")
+    if gemini_keys:
+        active_engines.append("Google Gemini")
+    if active_engines:
+        st.caption(f"🟢 Mesin AI Aktif: **{' + '.join(active_engines)}**")
 
     st.divider()
 
@@ -200,7 +270,7 @@ with st.sidebar:
         Pengguna dilarang memasukkan informasi sensitif, data pribadi, IP Publik produksi, atau *password* asli ke dalam percakapan.
         
         **Transparansi & Atribusi:**  
-        Aplikasi RA'BUNG-NET AI dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini terbaru dengan instruksi khusus berbasis Kurikulum SMK TJKT.
+        Aplikasi RA'BUNG-NET AI dikembangkan secara orisinal menggunakan Python, Streamlit, serta arsitektur Hybrid AI (Groq Cloud LPU & Google Gemini) berbasis Kurikulum SMK TJKT.
         """)
 
     if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
@@ -251,44 +321,6 @@ for msg in st.session_state.messages:
 prompt_to_process = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi di sini...")
 
 # ==========================================
-# 9. LOGIKA PEMROSESAN AI GEMINI
+# 9. LOGIKA PEMROSESAN HYBRID AI
 # ==========================================
 if prompt_to_process:
-    st.session_state.messages.append({"role": "user", "content": prompt_to_process})
-    with st.chat_message("user"):
-        st.markdown(prompt_to_process)
-
-    if not api_keys:
-        with st.chat_message("assistant", avatar=assistant_avatar):
-            st.error("⚠️ Sistem sedang dalam pemeliharaan (API Key belum diatur oleh Guru di menu Settings -> Secrets Streamlit Cloud).")
-    else:
-        with st.chat_message("assistant", avatar=assistant_avatar):
-            with st.spinner("RA'BUNG-NET AI sedang menganalisis konfigurasi & menyusun langkah troubleshooting..."):
-                try:
-                    full_system_instruction = BASE_SYSTEM_PROMPT
-                    if MODUL_TEXT:
-                        # Batasi ukuran teks modul agar hemat kuota token per menit
-                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI MODUL/JOBSHEET RESMI SEKOLAH SEBAGAI ACUAN UTAMA:\n{MODUL_TEXT[:15000]}"
-
-                    # Ambil maksimal 6 pesan terakhir agar hemat kuota token
-                    recent_messages = st.session_state.messages[-6:]
-                    contents = []
-                    for m in recent_messages:
-                        role = "user" if m["role"] == "user" else "model"
-                        contents.append(
-                            types.Content(
-                                role=role,
-                                parts=[types.Part.from_text(text=m["content"])]
-                            )
-                        )
-
-                    reply, used_model = generate_ai_response(api_keys, contents, full_system_instruction)
-
-                    st.markdown(reply)
-                    st.session_state.messages.append({"role": "assistant", "content": reply})
-
-                except Exception as e:
-                    st.error(
-                        "⏳ Maaf, trafik penggunaan AI sedang sangat padat (batas kuota gratis tercapai). "
-                        "Silakan tunggu sekitar 1 menit lalu coba kirim ulang pertanyaanmu ya!"
-                    )
