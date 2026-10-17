@@ -28,7 +28,7 @@ st.set_page_config(
     layout="wide"
 )
 
-NAMA_GURU = "adighoro."
+NAMA_GURU = "Nama Anda, S.Kom., Gr."
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
@@ -92,12 +92,14 @@ except Exception:
     pass
 
 # ==========================================
-# 6. FUNGSI HYBRID AI (GROQ + GOOGLE GEMINI)
+# 6. FUNGSI HYBRID AI DENGAN AUTO-DISCOVERY MODEL AKTIF
 # ==========================================
 def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, system_instruction):
-    last_error = None
+     errors_log = []
 
-    # LAPIS 1: COBA GROQ TERLEBIH DAHULU
+    # --------------------------------------------------
+    # LAPIS 1: GROQ CLOUD (DETEKSI OTOMATIS MODEL AKTIF)
+    # --------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
@@ -107,34 +109,57 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
             role = "user" if m["role"] == "user" else "assistant"
             groq_payload.append({"role": role, "content": m["content"]})
 
-        groq_models = [
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "qwen-qwq-32b",
-            "gemma2-9b-it"
-        ]
-
         for k in g_keys:
             try:
                 client = Groq(api_key=k)
-                for model_name in groq_models:
+                
+                # Ambil langsung daftar model yang sedang aktif dari server Groq
+                active_groq_models = []
+                try:
+                    models_resp = client.models.list()
+                    for m in models_resp.data:
+                        m_id = m.id
+                        # Saring hanya model chat/teks (bukan model suara/whisper atau guard)
+                        if not any(skip in m_id.lower() for skip in ["whisper", "guard", "tts", "vision", "embed", "playai", "allam"]):
+                            active_groq_models.append(m_id)
+                except Exception as e:
+                    errors_log.append(f"Groq List Error: {e}")
+
+                # Urutkan agar model Llama / Qwen / DeepSeek dicoba paling pertama
+                preferred_keywords = ["llama-3.3", "llama-3.1", "llama3", "qwen", "deepseek", "mixtral", "gemma"]
+                sorted_groq_models = []
+                for kw in preferred_keywords:
+                    for m_id in active_groq_models:
+                        if kw in m_id.lower() and m_id not in sorted_groq_models:
+                            sorted_groq_models.append(m_id)
+                for m_id in active_groq_models:
+                    if m_id not in sorted_groq_models:
+                        sorted_groq_models.append(m_id)
+
+                # Jika gagal mengambil list, gunakan fallback dasar
+                if not sorted_groq_models:
+                    sorted_groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+
+                for model_name in sorted_groq_models:
                     try:
                         completion = client.chat.completions.create(
                             model=model_name,
                             messages=groq_payload,
                             temperature=0.3,
-                            max_tokens=2048,
+                            max_tokens=1500,
                         )
                         reply_text = completion.choices[0].message.content
                         if reply_text:
                             return reply_text, f"Groq ({model_name})"
                     except Exception as e:
-                        last_error = e
+                        errors_log.append(f"Groq [{model_name}]: {e}")
                         continue
             except Exception as e:
-                last_error = e
+                errors_log.append(f"Groq Client Error: {e}")
 
-    # LAPIS 2: CADANGAN OTOMATIS KE GOOGLE GEMINI
+    # --------------------------------------------------
+    # LAPIS 2: GOOGLE GEMINI (DETEKSI OTOMATIS MODEL AKTIF)
+    # --------------------------------------------------
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
@@ -159,20 +184,29 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
                 )
             )
 
-        gemini_priority = [
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-lite",
-            "gemma-3-27b-it",
-            "gemma-3-12b-it",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3-flash-preview",
-            "gemini-3.8-flash"
-        ]
-
         for k in gem_keys:
             try:
                 client = genai.Client(api_key=k)
-                for model_name in gemini_priority:
+                active_gemini_models = []
+                try:
+                    for m in client.models.list():
+                        name = m.name.replace("models/", "")
+                        if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "image", "embedding", "vision", "audio", "veo", "imagen", "robotics", "computer-use"]):
+                            active_gemini_models.append(name)
+                except Exception as e:
+                    errors_log.append(f"Gemini List Error: {e}")
+
+                preferred_gem = ["flash-lite", "gemma-3", "flash"]
+                sorted_gemini = []
+                for kw in preferred_gem:
+                    for m_id in active_gemini_models:
+                        if kw in m_id.lower() and m_id not in sorted_gemini:
+                            sorted_gemini.append(m_id)
+                for m_id in active_gemini_models:
+                    if m_id not in sorted_gemini:
+                        sorted_gemini.append(m_id)
+
+                for model_name in sorted_gemini:
                     try:
                         response = client.models.generate_content(
                             model=model_name,
@@ -182,12 +216,12 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
                         if response and response.text:
                             return response.text, f"Google ({model_name})"
                     except Exception as e:
-                        last_error = e
+                        errors_log.append(f"Gemini [{model_name}]: {e}")
                         continue
             except Exception as e:
-                last_error = e
+                errors_log.append(f"Gemini Client Error: {e}")
 
-    raise last_error
+    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Tidak ada model yang merespons.")
 
 # ==========================================
 # 7. SIDEBAR: LOGO SEKOLAH & INFORMASI KARYA
@@ -303,16 +337,17 @@ if prompt_to_process:
 
     if not groq_keys and not gemini_keys:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            st.error("⚠️ API Key belum diatur di Streamlit Secrets. Silakan buka Settings -> Secrets lalu masukkan GROQ_API_KEY dan/atau GEMINI_API_KEY.")
+            st.error("⚠️ API Key belum terbaca di Streamlit Secrets. Pastikan Anda sudah memasukkan GROQ_API_KEY = \"gsk_...\" di menu Settings -> Secrets.")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
             with st.spinner("RA'BUNG-NET AI sedang menganalisis konfigurasi & menyusun langkah troubleshooting..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if MODUL_TEXT:
-                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI MODUL/JOBSHEET RESMI SEKOLAH SEBAGAI ACUAN UTAMA:\n{MODUL_TEXT[:8000]}"
+                        # Batasi 4000 karakter agar sangat ringan dan tidak melebihi batas Token Per Menit (TPM) Groq
+                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL SEKOLAH:\n{MODUL_TEXT[:4000]}"
 
-                    recent_messages = st.session_state.messages[-6:]
+                    recent_messages = st.session_state.messages[-4:]
                     reply, used_engine = generate_hybrid_response(
                         groq_keys, gemini_keys, recent_messages, full_system_instruction
                     )
@@ -322,7 +357,7 @@ if prompt_to_process:
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
                 except Exception as e:
-                    st.error("⏳ Maaf, seluruh jalur server AI sedang sibuk. Silakan coba kirim ulang beberapa saat lagi.")
+                    st.error("⏳ Maaf, terjadi kendala saat menghubungi server AI.")
                     with st.expander("🔍 Lihat Detail Teknis Error (Untuk Guru)"):
                         st.code(str(e))
 # --- AKHIR DARI FILE APP.PY ---
