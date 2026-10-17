@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 # Ubah data di bawah ini sesuai identitas Anda
-NAMA_GURU = "Nama Anda, S.Kom., Gr."
+NAMA_GURU = "Adinegoro Mangentang"
 ASAL_SEKOLAH = "SMKN 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
