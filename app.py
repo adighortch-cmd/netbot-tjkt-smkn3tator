@@ -28,7 +28,7 @@ st.set_page_config(
     layout="wide"
 )
 
-NAMA_GURU = "Nama Anda, S.Kom., Gr."
+NAMA_GURU = "Adi Ghoro"
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
