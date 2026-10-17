@@ -190,8 +190,6 @@ if "messages" not in st.session_state:
         }
     ]
 
-st.markdown("##### 💡 Uji Coba Cepat (Klik salah satu skenario praktikum):")
-col1, col2, col3, col4 = st.columns(4)
 
 sample_prompt = None
 with col1:
