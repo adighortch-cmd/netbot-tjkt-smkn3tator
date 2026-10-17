@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 # Ubah Nama Guru di bawah ini sesuai nama lengkap dan gelar Anda
-NAMA_GURU = "Nama Anda, S.Kom., Gr."
+NAMA_GURU = "Adighoro."
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
