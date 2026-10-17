@@ -1,3 +1,5 @@
+import os
+import glob
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -7,18 +9,44 @@ from pypdf import PdfReader
 # 1. KONFIGURASI HALAMAN & IDENTITAS KARYA
 # ==========================================
 st.set_page_config(
-    page_title="NetBot TJKT SMKN 3 Tana Toraja- Asisten Praktikum Jaringan & Linux",
+    page_title="NetBot TJKT - Asisten Praktikum Jaringan & Linux",
     page_icon="🌐",
     layout="wide"
 )
 
 # Ubah data di bawah ini sesuai identitas Anda
 NAMA_GURU = "Adinegoro Mangentang"
-ASAL_SEKOLAH = "SMKN 3 Tana Toraja - Sulawesi Selatan"
+ASAL_SEKOLAH = "SMKN 3 Tana Toraja"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
-# 2. SYSTEM PROMPT (OTAK ASISTEN AI TJKT)
+# 2. FUNGSI OTOMATIS BACA SEMUA MODUL PDF DI GITHUB
+# ==========================================
+@st.cache_data(show_spinner=False)
+def load_builtin_modules():
+    """Membaca otomatis semua file .pdf yang diunggah guru di repositori GitHub."""
+    combined_text = ""
+    loaded_files = []
+    pdf_files = sorted(glob.glob("*.pdf"))
+    
+    for pdf_path in pdf_files:
+        try:
+            reader = PdfReader(pdf_path)
+            file_text = ""
+            for page in reader.pages:
+                file_text += (page.extract_text() or "") + "\n"
+            if file_text.strip():
+                combined_text += f"\n--- ISI MODUL: {os.path.basename(pdf_path)} ---\n{file_text}\n"
+                loaded_files.append(os.path.basename(pdf_path))
+        except Exception:
+            continue
+            
+    return combined_text, loaded_files
+
+MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules()
+
+# ==========================================
+# 3. SYSTEM PROMPT (OTAK ASISTEN AI TJKT)
 # ==========================================
 BASE_SYSTEM_PROMPT = f"""
 Kamu adalah 'NetBot TJKT', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
@@ -34,10 +62,9 @@ Aturan Respons dan Pedagogis:
 """
 
 # ==========================================
-# 3. FUNGSI PEMANGGILAN AI DENGAN AUTO-FALLBACK
+# 4. FUNGSI PEMANGGILAN AI DENGAN AUTO-FALLBACK
 # ==========================================
 def generate_ai_response(client, contents, system_instruction):
-    # Daftar model dari yang paling baru sesuai rekomendasi API Google
     candidate_models = [
         "gemini-3.8-flash",
         "gemini-3-flash-preview",
@@ -60,13 +87,11 @@ def generate_ai_response(client, contents, system_instruction):
             return response.text, model_name
         except Exception as e:
             last_error = e
-            # Jika error karena model tidak ditemukan (404), lanjut coba model berikutnya
             if "404" in str(e) or "NOT_FOUND" in str(e) or "no longer available" in str(e):
                 continue
             else:
                 raise e
 
-    # Jika semua kandidat di atas masih 404, cari otomatis model Flash yang aktif di akun user
     for m in client.models.list():
         name = m.name.replace("models/", "")
         if "gemini" in name and "flash" in name and "tts" not in name and "image" not in name:
@@ -86,47 +111,35 @@ def generate_ai_response(client, contents, system_instruction):
     raise last_error
 
 # ==========================================
-# 4. SIDEBAR: DOKUMENTASI VALIDASI JUKNIS
+# 5. BACA API KEY OTOMATIS DARI STREAMLIT SECRETS
+# ==========================================
+api_key = None
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+# ==========================================
+# 6. SIDEBAR: BERSIH UNTUK SISWA & VALIDATOR
 # ==========================================
 with st.sidebar:
     st.title("🌐 NetBot TJKT")
-    st.caption("Karya Digital Guru Provinsi Sulawesi Selatan Tahun 2026")
+    st.caption(f"Asisten Virtual Praktikum {ASAL_SEKOLAH}")
     st.divider()
 
-    # Pengaturan API Key (Otomatis baca dari Streamlit Secrets jika sudah di-deploy)
-    api_key = None
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        pass
-
-    if not api_key:
-        api_key = st.text_input(
-            "🔑 Masukkan Gemini API Key:",
-            type="password",
-            help="Dapatkan API Key gratis di https://aistudio.google.com/app/apikey"
-        )
-
-    # Fitur Tambahan: Unggah Jobsheet PDF sebagai referensi tambahan AI
-    st.subheader("📄 Konteks Jobsheet (Opsional)")
-    uploaded_pdf = st.file_uploader(
-        "Unggah Jobsheet Praktikum (PDF) agar bot menjawab sesuai modul kelas:",
-        type=["pdf"]
-    )
-    pdf_text = ""
-    if uploaded_pdf:
-        try:
-            reader = PdfReader(uploaded_pdf)
-            for page in reader.pages:
-                pdf_text += (page.extract_text() or "") + "\n"
-            st.success(f"Jobsheet '{uploaded_pdf.name}' berhasil dimuat ke memori AI!")
-        except Exception as e:
-            st.error(f"Gagal membaca PDF: {e}")
+    # Tampilkan status modul bawaan yang sudah tertanam otomatis
+    st.subheader("📚 Basis Pengetahuan Aktif")
+    if DAFTAR_MODUL:
+        st.success(f"Terhubung dengan {len(DAFTAR_MODUL)} Modul/Jobsheet Sekolah:")
+        for nama_file in DAFTAR_MODUL:
+            st.markdown(f"- 📄 `{nama_file}`")
+    else:
+        st.info(" Menggunakan Kurikulum Standar TJKT (Mikrotik, Cisco, Linux Debian/Ubuntu, & Subnetting).")
 
     st.divider()
 
-    # Informasi Wajib Sesuai Juknis Bab V.D (Agar mudah diperiksa Validator)
+    # Informasi Wajib Sesuai Juknis Bab V.D (Untuk Pemeriksaan Validator)
     with st.expander("📋 Identitas & Deskripsi Karya", expanded=False):
         st.markdown(f"""
         **Pembuat:** {NAMA_GURU}  
@@ -152,12 +165,12 @@ with st.sidebar:
         Aplikasi ini dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini terbaru dengan instruksi khusus berbasis Kurikulum SMK TJKT.
         """)
 
-    if st.button("🗑️ Bersihkan Riwayat Chat", use_container_width=True):
+    if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
 # ==========================================
-# 5. HALAMAN UTAMA & CONTOH PROMPT UJI COBA
+# 7. HALAMAN UTAMA & CONTOH PROMPT UJI COBA
 # ==========================================
 st.header("🤖 Asisten Troubleshooting Jaringan & Server Linux (TJKT)")
 st.write(
@@ -165,7 +178,6 @@ st.write(
     "Ketik pesan *error* yang muncul di layar kamu atau klik tombol contoh kasus di bawah ini!"
 )
 
-# Inisialisasi Riwayat Percakapan
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
@@ -173,12 +185,11 @@ if "messages" not in st.session_state:
             "content": (
                 "Halo Sobat TJKT! 👋 Saya **NetBot**, asisten praktikum virtualmu. "
                 "Ada kendala konfigurasi Mikrotik, Cisco Packet Tracer, Linux Server, atau perhitungan Subnetting hari ini? "
-                "Silakan ceritakan topologimu atau tempelkan pesan *error*-nya di sini ya!"
+                "Silakan langsung ketik pertanyaanmu atau klik tombol contoh kasus di atas ya!"
             )
         }
     ]
 
-# Tombol Contoh Prompt untuk memudahkan Siswa & Tim Validator menguji fungsi karya
 st.markdown("##### 💡 Uji Coba Cepat (Klik salah satu skenario praktikum):")
 col1, col2, col3, col4 = st.columns(4)
 
@@ -212,40 +223,34 @@ with col4:
 
 st.divider()
 
-# Menampilkan Riwayat Chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Menangkap input dari chat box atau dari tombol contoh skenario
 user_input = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi di sini...")
 prompt_to_process = sample_prompt if sample_prompt else user_input
 
 # ==========================================
-# 6. LOGIKA PEMROSESAN AI GEMINI
+# 8. LOGIKA PEMROSESAN AI GEMINI
 # ==========================================
 if prompt_to_process:
-    # Tampilkan pesan pengguna
     st.session_state.messages.append({"role": "user", "content": prompt_to_process})
     with st.chat_message("user"):
         st.markdown(prompt_to_process)
 
-    # Validasi ketersediaan API Key
     if not api_key:
         with st.chat_message("assistant"):
-            st.warning("⚠️ Silakan masukkan **Gemini API Key** terlebih dahulu pada menu di sebelah kiri (Sidebar) untuk memulai percakapan.")
+            st.error("⚠️ Sistem sedang dalam pemeliharaan (API Key belum diatur oleh Guru di menu Settings -> Secrets Streamlit Cloud).")
     else:
         with st.chat_message("assistant"):
             with st.spinner("Menganalisis konfigurasi & menyusun langkah troubleshooting..."):
                 try:
                     client = genai.Client(api_key=api_key)
 
-                    # Gabungkan System Prompt dengan isi PDF Jobsheet jika ada yang diunggah
                     full_system_instruction = BASE_SYSTEM_PROMPT
-                    if pdf_text:
-                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI JOBSHEET PRAKTUM SEKOLAH SEBAGAI ACUAN UTAMA:\n{pdf_text[:20000]}"
+                    if MODUL_TEXT:
+                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI MODUL/JOBSHEET RESMI SEKOLAH SEBAGAI ACUAN UTAMA:\n{MODUL_TEXT[:30000]}"
 
-                    # Susun histori percakapan untuk dikirim ke Gemini
                     contents = []
                     for m in st.session_state.messages:
                         role = "user" if m["role"] == "user" else "model"
@@ -256,11 +261,9 @@ if prompt_to_process:
                             )
                         )
 
-                    # Panggil fungsi AI dengan sistem Auto-Fallback
                     reply, used_model = generate_ai_response(client, contents, full_system_instruction)
 
                     st.markdown(reply)
-                    st.caption(f"⚡ Dijawab menggunakan model: `{used_model}`")
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
                 except Exception as e:
