@@ -332,14 +332,16 @@ assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
 for msg in st.session_state.messages:
     avatar_icon = assistant_avatar if msg["role"] == "assistant" else "user"
     with st.chat_message(msg["role"], avatar=avatar_icon):
-        if isinstance(msg["content"], list):
-            for c in msg["content"]:
-                if hasattr(c, "format"): # Jika itu gambar PIL
-                    st.image(c, caption="Gambar yang diunggah siswa", width=350)
+        content = msg["content"]
+        if isinstance(content, list):
+            for item in content:
+                # Cek apakah item adalah objek gambar (PIL Image)
+                if type(item).__name__ == "Image" or hasattr(item, "verify") or "PIL" in str(type(item)):
+                    st.image(item, caption="Gambar yang diunggah", width=350)
                 else:
-                    st.markdown(str(c))
+                    st.markdown(str(item))
         else:
-            st.markdown(str(c))
+            st.markdown(str(content))
 
 # Input File Gambar (Opsional di atas chat input)
 uploaded_image_file = st.file_uploader("🖼️ Unggah Screenshot Error / Topologi (Opsional):", type=["png", "jpg", "jpeg"])
