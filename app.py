@@ -9,11 +9,9 @@ from pypdf import PdfReader
 # 1. DETEKSI OTOMATIS FILE LOGO DI GITHUB
 # ==========================================
 def find_logo():
-    # Prioritaskan jika ada file bernama logo.*
     for name in ["logo.png", "logo.jpg", "logo.jpeg"]:
         if os.path.exists(name):
             return name
-    # Jika nama file masih bawaan WhatsApp atau nama lain, ambil file gambar pertama yang ditemukan
     images = sorted(glob.glob("*.jpeg") + glob.glob("*.jpg") + glob.glob("*.png"))
     return images[0] if images else None
 
@@ -29,7 +27,7 @@ st.set_page_config(
 )
 
 # Ubah Nama Guru di bawah ini sesuai nama lengkap dan gelar Anda
-NAMA_GURU = "Adinegoro Mangentang."
+NAMA_GURU = "Nama Anda, S.Kom., Gr."
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
@@ -76,61 +74,83 @@ Aturan Respons dan Pedagogis:
 """
 
 # ==========================================
-# 5. FUNGSI PEMANGGILAN AI DENGAN AUTO-FALLBACK
+# 5. FUNGSI ROTASI MODEL & API KEY (ANTI ERROR 429 & 404)
 # ==========================================
-def generate_ai_response(client, contents, system_instruction):
-    candidate_models = [
-        "gemini-3.8-flash",
-        "gemini-3-flash-preview",
+def generate_ai_response(api_keys_list, contents, system_instruction):
+    # Urutan prioritas: dahulukan model Lite/Flash yang kuota hariannya lebih longgar
+    priority_models = [
         "gemini-3.1-flash-lite-preview",
+        "gemini-flash-lite-latest",
+        "gemini-3-flash-preview",
         "gemini-flash-latest",
+        "gemini-3.8-flash",
+        "gemini-2.5-flash-lite",
         "gemini-2.5-flash"
     ]
     
     last_error = None
-    for model_name in candidate_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.3,
-                )
-            )
-            return response.text, model_name
-        except Exception as e:
-            last_error = e
-            if "404" in str(e) or "NOT_FOUND" in str(e) or "no longer available" in str(e):
-                continue
-            else:
-                raise e
 
-    for m in client.models.list():
-        name = m.name.replace("models/", "")
-        if "gemini" in name and "flash" in name and "tts" not in name and "image" not in name:
+    # Coba setiap API Key yang tersedia
+    for current_key in api_keys_list:
+        client = genai.Client(api_key=current_key)
+        tried_models = set()
+
+        # 1. Coba daftar model prioritas
+        for model_name in priority_models:
+            tried_models.add(model_name)
             try:
                 response = client.models.generate_content(
-                    model=name,
+                    model=model_name,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         temperature=0.3,
                     )
                 )
-                return response.text, name
-            except Exception:
-                continue
+                return response.text, model_name
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                # Jika model tidak ada (404) ATAU kuota model tersebut habis (429), otomatis pindah ke model berikutnya!
+                if any(k in err_str for k in ["404", "NOT_FOUND", "429", "RESOURCE_EXHAUSTED", "quota", "no longer available"]):
+                    continue
+                else:
+                    raise e
+
+        # 2. Jika semua model di atas habis kuotanya, cari model teks lain yang masih aktif di akun Google tersebut
+        try:
+            for m in client.models.list():
+                name = m.name.replace("models/", "")
+                if name in tried_models:
+                    continue
+                if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "image", "embedding", "vision", "audio", "veo", "imagen"]):
+                    try:
+                        response = client.models.generate_content(
+                            model=name,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                system_instruction=system_instruction,
+                                temperature=0.3,
+                            )
+                        )
+                        return response.text, name
+                    except Exception as e2:
+                        last_error = e2
+                        continue
+        except Exception:
+            continue
 
     raise last_error
 
 # ==========================================
-# 6. BACA API KEY OTOMATIS DARI STREAMLIT SECRETS
+# 6. BACA API KEY DARI STREAMLIT SECRETS (MENDUKUNG MULTI-KEY)
 # ==========================================
-api_key = None
+api_keys = []
 try:
     if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
+        raw_keys = st.secrets["GEMINI_API_KEY"]
+        # Mendukung 1 key atau banyak key yang dipisahkan tanda koma
+        api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 except Exception:
     pass
 
@@ -221,7 +241,6 @@ if "messages" not in st.session_state:
         }
     ]
 
-# Gunakan logo sekolah sebagai ikon avatar saat Asisten AI menjawab
 assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
 
 for msg in st.session_state.messages:
@@ -239,21 +258,22 @@ if prompt_to_process:
     with st.chat_message("user"):
         st.markdown(prompt_to_process)
 
-    if not api_key:
+    if not api_keys:
         with st.chat_message("assistant", avatar=assistant_avatar):
             st.error("⚠️ Sistem sedang dalam pemeliharaan (API Key belum diatur oleh Guru di menu Settings -> Secrets Streamlit Cloud).")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
             with st.spinner("RA'BUNG-NET AI sedang menganalisis konfigurasi & menyusun langkah troubleshooting..."):
                 try:
-                    client = genai.Client(api_key=api_key)
-
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if MODUL_TEXT:
-                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI MODUL/JOBSHEET RESMI SEKOLAH SEBAGAI ACUAN UTAMA:\n{MODUL_TEXT[:30000]}"
+                        # Batasi ukuran teks modul agar hemat kuota token per menit
+                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI MODUL/JOBSHEET RESMI SEKOLAH SEBAGAI ACUAN UTAMA:\n{MODUL_TEXT[:15000]}"
 
+                    # Ambil maksimal 6 pesan terakhir agar hemat kuota token
+                    recent_messages = st.session_state.messages[-6:]
                     contents = []
-                    for m in st.session_state.messages:
+                    for m in recent_messages:
                         role = "user" if m["role"] == "user" else "model"
                         contents.append(
                             types.Content(
@@ -262,10 +282,13 @@ if prompt_to_process:
                             )
                         )
 
-                    reply, used_model = generate_ai_response(client, contents, full_system_instruction)
+                    reply, used_model = generate_ai_response(api_keys, contents, full_system_instruction)
 
                     st.markdown(reply)
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
                 except Exception as e:
-                    st.error(f"Terjadi kendala teknis saat menghubungi AI: {e}")
+                    st.error(
+                        "⏳ Maaf, trafik penggunaan AI sedang sangat padat (batas kuota gratis tercapai). "
+                        "Silakan tunggu sekitar 1 menit lalu coba kirim ulang pertanyaanmu ya!"
+                    )
