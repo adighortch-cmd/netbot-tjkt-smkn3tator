@@ -7,14 +7,14 @@ from pypdf import PdfReader
 # 1. KONFIGURASI HALAMAN & IDENTITAS KARYA
 # ==========================================
 st.set_page_config(
-    page_title="NetBot TJKT - Asisten Praktikum Jaringan & Linux",
+    page_title="NetBot TJKT SMKN 3 Tana Toraja- Asisten Praktikum Jaringan & Linux",
     page_icon="🌐",
     layout="wide"
 )
 
 # Ubah data di bawah ini sesuai identitas Anda
-NAMA_GURU = "Adinegoro Mangentang"
-ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja"
+NAMA_GURU = "Nama Anda, S.Kom., Gr."
+ASAL_SEKOLAH = "SMKN 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
@@ -34,7 +34,59 @@ Aturan Respons dan Pedagogis:
 """
 
 # ==========================================
-# 3. SIDEBAR: DOKUMENTASI VALIDASI JUKNIS
+# 3. FUNGSI PEMANGGILAN AI DENGAN AUTO-FALLBACK
+# ==========================================
+def generate_ai_response(client, contents, system_instruction):
+    # Daftar model dari yang paling baru sesuai rekomendasi API Google
+    candidate_models = [
+        "gemini-3.8-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-flash-latest",
+        "gemini-2.5-flash"
+    ]
+    
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.3,
+                )
+            )
+            return response.text, model_name
+        except Exception as e:
+            last_error = e
+            # Jika error karena model tidak ditemukan (404), lanjut coba model berikutnya
+            if "404" in str(e) or "NOT_FOUND" in str(e) or "no longer available" in str(e):
+                continue
+            else:
+                raise e
+
+    # Jika semua kandidat di atas masih 404, cari otomatis model Flash yang aktif di akun user
+    for m in client.models.list():
+        name = m.name.replace("models/", "")
+        if "gemini" in name and "flash" in name and "tts" not in name and "image" not in name:
+            try:
+                response = client.models.generate_content(
+                    model=name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.3,
+                    )
+                )
+                return response.text, name
+            except Exception:
+                continue
+
+    raise last_error
+
+# ==========================================
+# 4. SIDEBAR: DOKUMENTASI VALIDASI JUKNIS
 # ==========================================
 with st.sidebar:
     st.title("🌐 NetBot TJKT")
@@ -45,7 +97,7 @@ with st.sidebar:
     api_key = None
     try:
         if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets.get("GEMINI_API_KEY", None)
+            api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
         pass
 
@@ -67,7 +119,7 @@ with st.sidebar:
         try:
             reader = PdfReader(uploaded_pdf)
             for page in reader.pages:
-                pdf_text += page.extract_text() + "\n"
+                pdf_text += (page.extract_text() or "") + "\n"
             st.success(f"Jobsheet '{uploaded_pdf.name}' berhasil dimuat ke memori AI!")
         except Exception as e:
             st.error(f"Gagal membaca PDF: {e}")
@@ -97,7 +149,7 @@ with st.sidebar:
         Pengguna dilarang memasukkan informasi sensitif, data pribadi, IP Publik produksi, atau *password* asli ke dalam percakapan.
         
         **Transparansi & Atribusi:**  
-        Aplikasi ini dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini (`gemini-2.5-flash`) dengan instruksi khusus berbasis Kurikulum SMK TJKT.
+        Aplikasi ini dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini terbaru dengan instruksi khusus berbasis Kurikulum SMK TJKT.
         """)
 
     if st.button("🗑️ Bersihkan Riwayat Chat", use_container_width=True):
@@ -105,7 +157,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 4. HALAMAN UTAMA & CONTOH PROMPT UJI COBA
+# 5. HALAMAN UTAMA & CONTOH PROMPT UJI COBA
 # ==========================================
 st.header("🤖 Asisten Troubleshooting Jaringan & Server Linux (TJKT)")
 st.write(
@@ -170,7 +222,7 @@ user_input = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi
 prompt_to_process = sample_prompt if sample_prompt else user_input
 
 # ==========================================
-# 5. LOGIKA PEMROSESAN AI GEMINI
+# 6. LOGIKA PEMROSESAN AI GEMINI
 # ==========================================
 if prompt_to_process:
     # Tampilkan pesan pengguna
@@ -191,7 +243,7 @@ if prompt_to_process:
                     # Gabungkan System Prompt dengan isi PDF Jobsheet jika ada yang diunggah
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if pdf_text:
-                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI JOBSHEET PRAKTIKUM SEKOLAH SEBAGAI ACUAN UTAMA:\n{pdf_text[:20000]}"
+                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI JOBSHEET PRAKTUM SEKOLAH SEBAGAI ACUAN UTAMA:\n{pdf_text[:20000]}"
 
                     # Susun histori percakapan untuk dikirim ke Gemini
                     contents = []
@@ -204,18 +256,11 @@ if prompt_to_process:
                             )
                         )
 
-                    # Panggil model Gemini 2.5 Flash
-                    response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            system_instruction=full_system_instruction,
-                            temperature=0.3, # Rendah agar jawaban teknis tetap akurat & konsisten
-                        )
-                    )
+                    # Panggil fungsi AI dengan sistem Auto-Fallback
+                    reply, used_model = generate_ai_response(client, contents, full_system_instruction)
 
-                    reply = response.text
                     st.markdown(reply)
+                    st.caption(f"⚡ Dijawab menggunakan model: `{used_model}`")
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
                 except Exception as e:
