@@ -6,21 +6,35 @@ from google.genai import types
 from pypdf import PdfReader
 
 # ==========================================
-# 1. KONFIGURASI HALAMAN & IDENTITAS KARYA
+# 1. DETEKSI OTOMATIS FILE LOGO DI GITHUB
+# ==========================================
+def find_logo():
+    # Prioritaskan jika ada file bernama logo.*
+    for name in ["logo.png", "logo.jpg", "logo.jpeg"]:
+        if os.path.exists(name):
+            return name
+    # Jika nama file masih bawaan WhatsApp atau nama lain, ambil file gambar pertama yang ditemukan
+    images = sorted(glob.glob("*.jpeg") + glob.glob("*.jpg") + glob.glob("*.png"))
+    return images[0] if images else None
+
+LOGO_PATH = find_logo()
+
+# ==========================================
+# 2. KONFIGURASI HALAMAN & IDENTITAS KARYA
 # ==========================================
 st.set_page_config(
-    page_title="NetBot TJKT - Asisten Praktikum Jaringan & Linux",
-    page_icon="🌐",
+    page_title="RA'BUNG-NET AI - SMKN 3 Tana Toraja",
+    page_icon=LOGO_PATH if LOGO_PATH else "🌐",
     layout="wide"
 )
 
-# Ubah data di bawah ini sesuai identitas Anda
-NAMA_GURU = "Adinegoro Mangentang"
-ASAL_SEKOLAH = "SMKN 3 Tana Toraja - Sulawesi Selatan"
+# Ubah Nama Guru di bawah ini sesuai nama lengkap dan gelar Anda
+NAMA_GURU = "Adinegoro Mangentang."
+ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
-# 2. FUNGSI OTOMATIS BACA SEMUA MODUL PDF DI GITHUB
+# 3. FUNGSI OTOMATIS BACA SEMUA MODUL PDF DI GITHUB
 # ==========================================
 @st.cache_data(show_spinner=False)
 def load_builtin_modules():
@@ -46,14 +60,14 @@ def load_builtin_modules():
 MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules()
 
 # ==========================================
-# 3. SYSTEM PROMPT (OTAK ASISTEN AI TJKT)
+# 4. SYSTEM PROMPT (OTAK ASISTEN RA'BUNG-NET AI)
 # ==========================================
 BASE_SYSTEM_PROMPT = f"""
-Kamu adalah 'NetBot TJKT', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
+Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
 Tugas utamamu adalah membantu siswa melakukan troubleshooting konfigurasi jaringan (Mikrotik RouterOS, Cisco IOS), administrasi sistem jaringan (Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6.
 
 Aturan Respons dan Pedagogis:
-1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi.
+1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa.
 2. JANGAN langsung memberikan kunci jawaban konfigurasi utuh tanpa penjelasan. Bantu siswa memahami letak kesalahannya (debugging/troubleshooting).
 3. Berikan daftar periksa pengecekan (troubleshooting checklist), misalnya menyarankan perintah `ip address print`, `ip route print`, `ping`, `traceroute`, `systemctl status`, `journalctl -xe`, atau `nginx -t` / `named-checkconf`.
 4. Untuk pertanyaan Subnetting, jelaskan langkah-langkah cara menghitungnya (mulai dari prefix, subnet mask, blok subnet, jumlah host, hingga range IP valid).
@@ -62,7 +76,7 @@ Aturan Respons dan Pedagogis:
 """
 
 # ==========================================
-# 4. FUNGSI PEMANGGILAN AI DENGAN AUTO-FALLBACK
+# 5. FUNGSI PEMANGGILAN AI DENGAN AUTO-FALLBACK
 # ==========================================
 def generate_ai_response(client, contents, system_instruction):
     candidate_models = [
@@ -111,7 +125,7 @@ def generate_ai_response(client, contents, system_instruction):
     raise last_error
 
 # ==========================================
-# 5. BACA API KEY OTOMATIS DARI STREAMLIT SECRETS
+# 6. BACA API KEY OTOMATIS DARI STREAMLIT SECRETS
 # ==========================================
 api_key = None
 try:
@@ -121,14 +135,18 @@ except Exception:
     pass
 
 # ==========================================
-# 6. SIDEBAR: BERSIH UNTUK SISWA & VALIDATOR
+# 7. SIDEBAR: LOGO SEKOLAH & INFORMASI KARYA
 # ==========================================
 with st.sidebar:
-    st.title("🌐 NetBot TJKT")
-    st.caption(f"Asisten Virtual Praktikum {ASAL_SEKOLAH}")
+    if LOGO_PATH:
+        col_s1, col_s2, col_s3 = st.columns([1, 2, 1])
+        with col_s2:
+            st.image(LOGO_PATH, use_container_width=True)
+
+    st.markdown("<h2 style='text-align: center; margin-bottom: 0;'>RA'BUNG-NET AI</h2>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em;'>Asisten Virtual Praktikum TJKT<br><b>{ASAL_SEKOLAH}</b></p>", unsafe_allow_html=True)
     st.divider()
 
-    # Tampilkan status modul bawaan yang sudah tertanam otomatis
     st.subheader("📚 Basis Pengetahuan Aktif")
     if DAFTAR_MODUL:
         st.success(f"Terhubung dengan {len(DAFTAR_MODUL)} Modul/Jobsheet Sekolah:")
@@ -139,9 +157,9 @@ with st.sidebar:
 
     st.divider()
 
-    # Informasi Wajib Sesuai Juknis Bab V.D (Untuk Pemeriksaan Validator)
     with st.expander("📋 Identitas & Deskripsi Karya", expanded=False):
         st.markdown(f"""
+        **Nama Karya:** RA'BUNG-NET AI  
         **Pembuat:** {NAMA_GURU}  
         **Satuan Pendidikan:** {ASAL_SEKOLAH}  
         **Kategori:** {KATEGORI_KARYA}  
@@ -162,7 +180,7 @@ with st.sidebar:
         Pengguna dilarang memasukkan informasi sensitif, data pribadi, IP Publik produksi, atau *password* asli ke dalam percakapan.
         
         **Transparansi & Atribusi:**  
-        Aplikasi ini dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini terbaru dengan instruksi khusus berbasis Kurikulum SMK TJKT.
+        Aplikasi RA'BUNG-NET AI dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini terbaru dengan instruksi khusus berbasis Kurikulum SMK TJKT.
         """)
 
     if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
@@ -170,13 +188,25 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 7. HALAMAN UTAMA (RUANG CHAT LANGSUNG)
+# 8. HALAMAN UTAMA (HEADER DENGAN LOGO + RUANG CHAT)
 # ==========================================
-st.header("🤖 Asisten Troubleshooting Jaringan & Server Linux (TJKT)")
-st.write(
-    "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
-    "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
-)
+if LOGO_PATH:
+    col_h1, col_h2 = st.columns([1, 9])
+    with col_h1:
+        st.image(LOGO_PATH, width=85)
+    with col_h2:
+        st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
+        st.write(
+            "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
+            "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
+        )
+else:
+    st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
+    st.write(
+        "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
+        "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
+    )
+
 st.divider()
 
 if "messages" not in st.session_state:
@@ -184,21 +214,25 @@ if "messages" not in st.session_state:
         {
             "role": "assistant",
             "content": (
-                "Halo Sobat TJKT! 👋 Saya **NetBot**, asisten praktikum virtualmu. "
+                "Halo Sobat TJKT! 👋 Saya **RA'BUNG-NET AI**, asisten praktikum virtualmu di **SMK Negeri 3 Tana Toraja**. "
                 "Ada kendala konfigurasi Mikrotik, Cisco Packet Tracer, Linux Server, atau perhitungan Subnetting hari ini? "
                 "Silakan ceritakan topologimu atau ketik pesan *error*-nya di bawah ini ya!"
             )
         }
     ]
 
+# Gunakan logo sekolah sebagai ikon avatar saat Asisten AI menjawab
+assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
+
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
+    avatar_icon = assistant_avatar if msg["role"] == "assistant" else "user"
+    with st.chat_message(msg["role"], avatar=avatar_icon):
         st.markdown(msg["content"])
 
 prompt_to_process = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi di sini...")
 
 # ==========================================
-# 8. LOGIKA PEMROSESAN AI GEMINI
+# 9. LOGIKA PEMROSESAN AI GEMINI
 # ==========================================
 if prompt_to_process:
     st.session_state.messages.append({"role": "user", "content": prompt_to_process})
@@ -206,11 +240,11 @@ if prompt_to_process:
         st.markdown(prompt_to_process)
 
     if not api_key:
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=assistant_avatar):
             st.error("⚠️ Sistem sedang dalam pemeliharaan (API Key belum diatur oleh Guru di menu Settings -> Secrets Streamlit Cloud).")
     else:
-        with st.chat_message("assistant"):
-            with st.spinner("Menganalisis konfigurasi & menyusun langkah troubleshooting..."):
+        with st.chat_message("assistant", avatar=assistant_avatar):
+            with st.spinner("RA'BUNG-NET AI sedang menganalisis konfigurasi & menyusun langkah troubleshooting..."):
                 try:
                     client = genai.Client(api_key=api_key)
 
