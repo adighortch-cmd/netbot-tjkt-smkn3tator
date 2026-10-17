@@ -1,5 +1,7 @@
 import os
+import io
 import glob
+import base64
 import random
 import streamlit as st
 from groq import Groq
@@ -93,80 +95,129 @@ except Exception:
     pass
 
 # ==========================================
-# 6. FUNGSI MULTIMODAL HYBRID AI (TEKS, GAMBAR & FILE)
+# 6. FUNGSI KONVERSI GAMBAR KE BYTES & BASE64
+# ==========================================
+def pil_to_jpeg_bytes_and_b64(pil_img):
+    rgb_im = pil_img.convert("RGB")
+    rgb_im.thumbnail((1280, 1280)) # Kompresi ukuran agar cepat diproses AI
+    buf = io.BytesIO()
+    rgb_im.save(buf, format="JPEG", quality=85)
+    img_bytes = buf.getvalue()
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    return img_bytes, img_b64
+
+def is_pil_image(obj):
+    return type(obj).__name__ == "Image" or hasattr(obj, "verify") or "PIL" in str(type(obj))
+
+# ==========================================
+# 7. FUNGSI MULTIMODAL HYBRID AI (GROQ VISION + GEMINI VISION)
 # ==========================================
 def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, system_instruction, has_image=False):
     errors_log = []
 
-    # LAPIS VISION: PRIORITASKAN GEMINI JIKA ADA GAMBAR
-    if gemini_key_list and has_image:
-        gem_keys = list(gemini_key_list)
-        random.shuffle(gem_keys)
+    # ---------------------------------------------------------
+    # A. JIKA ADA GAMBAR: COBA GROQ VISION & GEMINI VISION
+    # ---------------------------------------------------------
+    if has_image:
+        # Ambil pesan terakhir yang berisi gambar dan teks
+        last_msg = chat_messages[-1]["content"]
+        text_prompt = "Tolong analisis gambar praktikum/error ini dan berikan solusi langkah demi langkah."
+        images_list = []
 
-        gemini_contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=f"[INSTRUKSI SISTEM WAJIB DIIKUTI]:\n{system_instruction}")]
-            ),
-            types.Content(
-                role="model",
-                parts=[types.Part.from_text(text="Siap, saya RA'BUNG-NET AI siap menganalisis teks, file, dan gambar praktikum TJKT.")]
-            )
-        ]
+        if isinstance(last_msg, list):
+            texts = [str(x) for x in last_msg if isinstance(x, str)]
+            if texts:
+                text_prompt = "\n".join(texts)
+            images_list = [x for x in last_msg if is_pil_image(x)]
 
-        for m in chat_messages:
-            role = "user" if m["role"] == "user" else "model"
-            parts_list = []
-            if isinstance(m["content"], list):
-                for item in m["content"]:
-                    if isinstance(item, str):
-                        parts_list.append(types.Part.from_text(text=item))
-                    elif type(item).__name__ == "Image" or hasattr(item, "verify") or "PIL" in str(type(item)):
-                        parts_list.append(types.Part.from_image(item))
-            else:
-                parts_list.append(types.Part.from_text(text=str(m["content"])))
-            
-            gemini_contents.append(types.Content(role=role, parts=parts_list))
+        # 1. Coba GROQ VISION terlebih dahulu (Sangat cepat)
+        if groq_key_list and images_list:
+            g_keys = list(groq_key_list)
+            random.shuffle(g_keys)
+            _, img_b64 = pil_to_jpeg_bytes_and_b64(images_list[-1])
 
-        for k in gem_keys:
-            try:
-                client = genai.Client(api_key=k)
-                active_gemini_models = []
+            vision_content = [
+                {"type": "text", "text": f"{system_instruction}\n\nPertanyaan Siswa:\n{text_prompt}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+            ]
+
+            for k in g_keys:
                 try:
-                    for m in client.models.list():
-                        name = m.name.replace("models/", "")
-                        if "gemini" in name and not any(x in name for x in ["tts", "embedding", "audio", "veo", "imagen"]):
-                            active_gemini_models.append(name)
-                except Exception as e:
-                    errors_log.append(f"Gemini List Error: {e}")
-
-                preferred_gem = ["flash", "pro"]
-                sorted_gemini = []
-                for kw in preferred_gem:
-                    for m_id in active_gemini_models:
-                        if kw in m_id.lower() and m_id not in sorted_gemini:
-                            sorted_gemini.append(m_id)
-                for m_id in active_gemini_models:
-                    if m_id not in sorted_gemini:
-                        sorted_gemini.append(m_id)
-
-                for model_name in sorted_gemini:
+                    client = Groq(api_key=k)
+                    # Deteksi model vision aktif di Groq
+                    vision_models = [
+                        "meta-llama/llama-4-scout-17b-16e-instruct",
+                        "meta-llama/llama-4-maverick-17b-128e-instruct",
+                        "llama-3.2-90b-vision-preview",
+                        "llama-3.2-11b-vision-preview"
+                    ]
                     try:
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=gemini_contents,
-                            config=types.GenerateContentConfig(temperature=0.3)
-                        )
-                        if response and response.text:
-                            return response.text, f"Google Vision ({model_name})"
-                    except Exception as e:
-                        errors_log.append(f"Gemini Vision [{model_name}]: {e}")
-                        continue
-            except Exception as e:
-                errors_log.append(f"Gemini Client Error: {e}")
+                        for m in client.models.list().data:
+                            if any(v in m.id.lower() for v in ["vision", "llama-4", "pixtral"]) and m.id not in vision_models:
+                                vision_models.insert(0, m.id)
+                    except Exception:
+                        pass
 
-    # LAPIS 1 TEKS: GROQ CLOUD (JIKA TIDAK ADA GAMBAR)
-    if groq_key_list and not has_image:
+                    for v_model in vision_models:
+                        try:
+                            completion = client.chat.completions.create(
+                                model=v_model,
+                                messages=[{"role": "user", "content": vision_content}],
+                                temperature=0.3,
+                                max_tokens=1500
+                            )
+                            reply_text = completion.choices[0].message.content
+                            if reply_text:
+                                return reply_text, f"Groq Vision ({v_model})"
+                        except Exception as e:
+                            errors_log.append(f"GroqVision [{v_model}]: {e}")
+                            continue
+                except Exception as e:
+                    errors_log.append(f"Groq Client: {e}")
+
+        # 2. Coba GOOGLE GEMINI VISION (Menggunakan Part.from_bytes yang stabil)
+        if gemini_key_list and images_list:
+            gem_keys = list(gemini_key_list)
+            random.shuffle(gem_keys)
+            img_bytes, _ = pil_to_jpeg_bytes_and_b64(images_list[-1])
+
+            parts_payload = [
+                types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\nPertanyaan Siswa:\n{text_prompt}"),
+                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+            ]
+
+            for k in gem_keys:
+                try:
+                    client = genai.Client(api_key=k)
+                    gem_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+                    try:
+                        for m in client.models.list():
+                            name = m.name.replace("models/", "")
+                            if "gemini" in name and "flash" in name and not any(x in name for x in ["tts", "audio", "embedding"]):
+                                if name not in gem_models:
+                                    gem_models.append(name)
+                    except Exception:
+                        pass
+
+                    for m_name in gem_models:
+                        try:
+                            response = client.models.generate_content(
+                                model=m_name,
+                                contents=[types.Content(role="user", parts=parts_payload)],
+                                config=types.GenerateContentConfig(temperature=0.3)
+                            )
+                            if response and response.text:
+                                return response.text, f"Google Vision ({m_name})"
+                        except Exception as e:
+                            errors_log.append(f"GeminiVision [{m_name}]: {e}")
+                            continue
+                except Exception as e:
+                    errors_log.append(f"Gemini Client: {e}")
+
+    # ---------------------------------------------------------
+    # B. JIKA TEKS / FILE BIASA (ATAU FALLBACK)
+    # ---------------------------------------------------------
+    if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
 
@@ -178,22 +229,22 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                 content_str = "\n".join([str(x) for x in content_val if isinstance(x, str)])
             else:
                 content_str = str(content_val)
-            groq_payload.append({"role": role, "content": content_str})
+            if content_str.strip():
+                groq_payload.append({"role": role, "content": content_str})
 
         for k in g_keys:
             try:
                 client = Groq(api_key=k)
                 active_groq_models = []
                 try:
-                    models_resp = client.models.list()
-                    for m in models_resp.data:
+                    for m in client.models.list().data:
                         m_id = m.id
-                        if not any(skip in m_id.lower() for skip in ["whisper", "guard", "tts", "vision", "embed", "playai", "allam"]):
+                        if not any(skip in m_id.lower() for skip in ["whisper", "guard", "tts", "embed", "playai", "allam"]):
                             active_groq_models.append(m_id)
                 except Exception:
                     pass
 
-                preferred_keywords = ["llama-3.3", "llama-3.1", "llama3", "qwen", "deepseek", "mixtral", "gemma"]
+                preferred_keywords = ["llama-3.3", "llama-3.1", "llama-4", "qwen", "deepseek", "mixtral", "gemma"]
                 sorted_groq_models = []
                 for kw in preferred_keywords:
                     for m_id in active_groq_models:
@@ -223,7 +274,6 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
             except Exception as e:
                 errors_log.append(f"Groq Client Error: {e}")
 
-    # LAPIS 2 TEKS: GOOGLE GEMINI (FALLBACK TEKS)
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
@@ -239,7 +289,8 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                 content_str = "\n".join([str(x) for x in content_val if isinstance(x, str)])
             else:
                 content_str = str(content_val)
-            gemini_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=content_str)]))
+            if content_str.strip():
+                gemini_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=content_str)]))
 
         for k in gem_keys:
             try:
@@ -259,10 +310,10 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
             except Exception as e:
                 errors_log.append(f"Gemini Client Error: {e}")
 
-    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Tidak ada model AI yang merespons.")
+    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Pastikan GROQ_API_KEY atau GEMINI_API_KEY aktif di Streamlit Secrets.")
 
 # ==========================================
-# 7. SIDEBAR: LOGO, MODUL & INFO KARYA
+# 8. SIDEBAR: LOGO, MODUL & INFO KARYA
 # ==========================================
 extra_modul_text = ""
 
@@ -309,7 +360,7 @@ with st.sidebar:
                     st.error(f"Gagal: {e}")
 
     active_engines = []
-    if groq_keys: active_engines.append("Groq LPU")
+    if groq_keys: active_engines.append("Groq Vision & LPU")
     if gemini_keys: active_engines.append("Gemini Vision")
     if active_engines:
         st.caption(f"🟢 Mesin AI Aktif: **{' + '.join(active_engines)}**")
@@ -332,7 +383,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 8. HALAMAN UTAMA & RIWAYAT CHAT
+# 9. HALAMAN UTAMA & RIWAYAT CHAT
 # ==========================================
 if LOGO_PATH:
     col_h1, col_h2 = st.columns([1, 9])
@@ -365,7 +416,6 @@ if "messages" not in st.session_state:
         }
     ]
 
-# Tampilkan Riwayat Chat dengan Aman (Anti NameError)
 assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
 for msg in st.session_state.messages:
     avatar_icon = assistant_avatar if msg["role"] == "assistant" else "user"
@@ -373,7 +423,7 @@ for msg in st.session_state.messages:
         content = msg["content"]
         if isinstance(content, list):
             for item in content:
-                if type(item).__name__ == "Image" or hasattr(item, "verify") or "PIL" in str(type(item)):
+                if is_pil_image(item):
                     st.image(item, caption="Lampiran Gambar Siswa", width=350)
                 else:
                     st.markdown(str(item))
@@ -381,13 +431,12 @@ for msg in st.session_state.messages:
             st.markdown(str(content))
 
 # ==========================================
-# 9. KOLOM CHAT MODERN DENGAN TOMBOL UPLOAD MENYATU (ALA CHATGPT)
+# 10. KOLOM CHAT MODERN DENGAN TOMBOL UPLOAD MENYATU
 # ==========================================
 user_text = None
 attached_files = []
 
 try:
-    # Fitur Native Streamlit Terbaru: Tombol '+' / Lampiran menyatu di dalam kotak chat_input!
     chat_val = st.chat_input(
         "Tanyakan kendala praktikum atau lampirkan foto/file lewat ikon di kiri...",
         accept_file="multiple",
@@ -397,7 +446,6 @@ try:
         user_text = chat_val.text
         attached_files = chat_val.files
 except TypeError:
-    # Fallback Otomatis jika Streamlit Cloud menggunakan versi lama: Tombol "+" Popover tepat di atas chat_input
     with st.popover("➕ Add photos & files (Upload dari Komputer/HP)"):
         fallback_files = st.file_uploader(
             "Pilih gambar screenshot error atau file praktikum:",
@@ -411,7 +459,7 @@ except TypeError:
         attached_files = fallback_files if fallback_files else []
 
 # ==========================================
-# 10. PEMROSESAN PESAN, GAMBAR & FILE DARI SISWA
+# 11. PEMROSESAN PESAN, GAMBAR & FILE DARI SISWA
 # ==========================================
 if user_text or attached_files:
     current_content = []
@@ -419,7 +467,6 @@ if user_text or attached_files:
     file_names_info = []
     has_image_attachment = False
 
-    # Proses semua file atau foto yang dilampirkan siswa
     for f in attached_files:
         fname_lower = f.name.lower()
         if fname_lower.endswith((".png", ".jpg", ".jpeg")):
@@ -442,7 +489,6 @@ if user_text or attached_files:
             except Exception:
                 pass
         else:
-            # Untuk file teks konfigurasi (.txt, .conf, .rsc Mikrotik, .log)
             try:
                 txt_extracted = f.read().decode("utf-8", errors="ignore")
                 if txt_extracted.strip():
@@ -451,16 +497,13 @@ if user_text or attached_files:
             except Exception:
                 pass
 
-    # Tambahkan teks pertanyaan dari siswa
     if user_text:
         current_content.append(user_text)
     else:
         current_content.append("Tolong analisis lampiran gambar/file praktikum ini dan jelaskan langkah-langkah penyelesaiannya.")
 
-    # Simpan ke riwayat percakapan
     st.session_state.messages.append({"role": "user", "content": current_content})
 
-    # Tampilkan pesan siswa di layar
     with st.chat_message("user"):
         for img in images_for_display:
             st.image(img, caption="Screenshot yang dikirim", width=350)
@@ -471,13 +514,12 @@ if user_text or attached_files:
         elif not user_text:
             st.markdown("*[Mengirim lampiran untuk dianalisis]*")
 
-    # Jalankan Analisis Hybrid AI
     if not groq_keys and not gemini_keys:
         with st.chat_message("assistant", avatar=assistant_avatar):
             st.error("⚠️ API Key belum diatur di Streamlit Secrets.")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            with st.spinner("RA'BUNG-NET AI sedang menganalisis lampiran & menyusun panduan troubleshooting..."):
+            with st.spinner("RA'BUNG-NET AI sedang menganalisis gambar & menyusun langkah troubleshooting..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     gabungan_modul = (MODUL_TEXT + "\n" + extra_modul_text).strip()
