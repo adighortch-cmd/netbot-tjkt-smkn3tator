@@ -28,8 +28,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Ubah Nama Guru di bawah ini sesuai nama lengkap dan gelar Anda
-NAMA_GURU = "Adighoro"
+NAMA_GURU = "Nama Anda, S.Kom., Gr."
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
@@ -41,7 +40,6 @@ def load_builtin_modules():
     combined_text = ""
     loaded_files = []
     pdf_files = sorted(glob.glob("*.pdf"))
-    
     for pdf_path in pdf_files:
         try:
             reader = PdfReader(pdf_path)
@@ -53,7 +51,6 @@ def load_builtin_modules():
                 loaded_files.append(os.path.basename(pdf_path))
         except Exception:
             continue
-            
     return combined_text, loaded_files
 
 MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules()
@@ -87,13 +84,10 @@ try:
             cleaned = str(raw_val).replace('"', '').replace("'", "").strip()
             for k in cleaned.split(","):
                 k = k.strip()
-                # Deteksi otomatis berdasarkan awalan kunci agar tidak pernah tertukar
-                if k.startswith("gsk_"):
-                    if k not in groq_keys:
-                        groq_keys.append(k)
-                elif k.startswith("AIza"):
-                    if k not in gemini_keys:
-                        gemini_keys.append(k)
+                if k.startswith("gsk_") and k not in groq_keys:
+                    groq_keys.append(k)
+                elif k.startswith("AIza") and k not in gemini_keys:
+                    gemini_keys.append(k)
 except Exception:
     pass
 
@@ -103,9 +97,7 @@ except Exception:
 def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, system_instruction):
     last_error = None
 
-    # --------------------------------------------------
-    # LAPIS 1: COBA GROQ TERLEBIH DAHULU (CEPAT & KUOTA BESAR)
-    # --------------------------------------------------
+    # LAPIS 1: COBA GROQ TERLEBIH DAHULU
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
@@ -142,9 +134,7 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
             except Exception as e:
                 last_error = e
 
-    # --------------------------------------------------
-    # LAPIS 2: JIKA GROQ PENUH/OFFLINE, OTOMATIS PINDAH KE GOOGLE GEMINI
-    # --------------------------------------------------
+    # LAPIS 2: CADANGAN OTOMATIS KE GOOGLE GEMINI
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
@@ -180,147 +170,3 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
         ]
 
         for k in gem_keys:
-            try:
-                client = genai.Client(api_key=k)
-                available = []
-                try:
-                    for m in client.models.list():
-                        name = m.name.replace("models/", "")
-                        if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "image", "embedding", "vision", "audio", "veo", "imagen"]):
-                            available.append(name)
-                except Exception:
-                    pass
-
-                models_to_try = [m for m in gemini_priority if not available or m in available]
-                for m in available:
-                    if m not in models_to_try:
-                        models_to_try.append(m)
-                if not models_to_try:
-                    models_to_try = gemini_priority
-
-                for model_name in models_to_try:
-                    try:
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=gemini_contents,
-                            config=types.GenerateContentConfig(temperature=0.3)
-                        )
-                        if response and response.text:
-                            return response.text, f"Google ({model_name})"
-                    except Exception as e:
-                        last_error = e
-                        continue
-            except Exception as e:
-                last_error = e
-
-    raise last_error
-
-# ==========================================
-# 7. SIDEBAR: LOGO SEKOLAH & INFORMASI KARYA
-# ==========================================
-with st.sidebar:
-    if LOGO_PATH:
-        col_s1, col_s2, col_s3 = st.columns([1, 2, 1])
-        with col_s2:
-            st.image(LOGO_PATH, use_container_width=True)
-
-    st.markdown("<h2 style='text-align: center; margin-bottom: 0;'>RA'BUNG-NET AI</h2>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em;'>Asisten Virtual Praktikum TJKT<br><b>{ASAL_SEKOLAH}</b></p>", unsafe_allow_html=True)
-    st.divider()
-
-    st.subheader("📚 Basis Pengetahuan Aktif")
-    if DAFTAR_MODUL:
-        st.success(f"Terhubung dengan {len(DAFTAR_MODUL)} Modul/Jobsheet Sekolah:")
-        for nama_file in DAFTAR_MODUL:
-            st.markdown(f"- 📄 `{nama_file}`")
-    else:
-        st.info("Menggunakan Kurikulum Standar TJKT (Mikrotik, Cisco, Linux Debian/Ubuntu, & Subnetting).")
-
-    # Indikator Mesin AI yang Aktif
-    active_engines = []
-    if groq_keys:
-        active_engines.append("Groq LPU")
-    if gemini_keys:
-        active_engines.append("Google Gemini")
-    if active_engines:
-        st.caption(f"🟢 Mesin AI Aktif: **{' + '.join(active_engines)}**")
-
-    st.divider()
-
-    with st.expander("📋 Identitas & Deskripsi Karya", expanded=False):
-        st.markdown(f"""
-        **Nama Karya:** RA'BUNG-NET AI  
-        **Pembuat:** {NAMA_GURU}  
-        **Satuan Pendidikan:** {ASAL_SEKOLAH}  
-        **Kategori:** {KATEGORI_KARYA}  
-        
-        **Permasalahan:**  
-        Keterbatasan waktu guru saat mendampingi 30+ siswa praktikum jaringan & server secara bersamaan ketika terjadi *error* konfigurasi.
-        
-        **Tujuan & Fungsi:**  
-        Menyediakan asisten AI 24/7 untuk mendiagnosis pesan *error* konfigurasi Mikrotik, Cisco, Linux Debian/Ubuntu, serta memandu perhitungan *subnetting* secara bertahap.
-        
-        **Manfaat:**  
-        Mempercepat *troubleshooting* mandiri siswa di laboratorium dan rumah, serta meningkatkan efisiensi bimbingan praktik guru.
-        """)
-
-    with st.expander("🛡️ Etika, Privasi & Orisinalitas", expanded=False):
-        st.markdown("""
-        **Keamanan & Privasi Data:**  
-        Pengguna dilarang memasukkan informasi sensitif, data pribadi, IP Publik produksi, atau *password* asli ke dalam percakapan.
-        
-        **Transparansi & Atribusi:**  
-        Aplikasi RA'BUNG-NET AI dikembangkan secara orisinal menggunakan Python, Streamlit, serta arsitektur Hybrid AI (Groq Cloud LPU & Google Gemini) berbasis Kurikulum SMK TJKT.
-        """)
-
-    if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-
-# ==========================================
-# 8. HALAMAN UTAMA (HEADER DENGAN LOGO + RUANG CHAT)
-# ==========================================
-if LOGO_PATH:
-    col_h1, col_h2 = st.columns([1, 9])
-    with col_h1:
-        st.image(LOGO_PATH, width=85)
-    with col_h2:
-        st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
-        st.write(
-            "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
-            "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
-        )
-else:
-    st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
-    st.write(
-        "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
-        "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
-    )
-
-st.divider()
-
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "Halo Sobat TJKT! 👋 Saya **RA'BUNG-NET AI**, asisten praktikum virtualmu di **SMK Negeri 3 Tana Toraja**. "
-                "Ada kendala konfigurasi Mikrotik, Cisco Packet Tracer, Linux Server, atau perhitungan Subnetting hari ini? "
-                "Silakan ceritakan topologimu atau ketik pesan *error*-nya di bawah ini ya!"
-            )
-        }
-    ]
-
-assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
-
-for msg in st.session_state.messages:
-    avatar_icon = assistant_avatar if msg["role"] == "assistant" else "user"
-    with st.chat_message(msg["role"], avatar=avatar_icon):
-        st.markdown(msg["content"])
-
-prompt_to_process = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi di sini...")
-
-# ==========================================
-# 9. LOGIKA PEMROSESAN HYBRID AI
-# ==========================================
-if prompt_to_process:
