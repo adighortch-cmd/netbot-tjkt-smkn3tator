@@ -6,6 +6,7 @@ from groq import Groq
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
+from PIL import Image
 
 # ==========================================
 # 1. DETEKSI OTOMATIS FILE LOGO DI GITHUB
@@ -60,7 +61,7 @@ MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules()
 # ==========================================
 BASE_SYSTEM_PROMPT = f"""
 Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
-Tugas utamamu adalah membantu siswa melakukan troubleshooting konfigurasi jaringan (Mikrotik RouterOS, Cisco IOS), administrasi sistem jaringan (Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6.
+Tugas utamamu adalah membantu siswa melakukan troubleshooting konfigurasi jaringan (Mikrotik RouterOS, Cisco IOS), administrasi sistem jaringan (Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, termasuk menganalisis gambar screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
 
 Aturan Respons dan Pedagogis:
 1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa. Gunakan Bahasa Indonesia yang jelas dan mudah dipahami siswa SMK.
@@ -92,20 +93,92 @@ except Exception:
     pass
 
 # ==========================================
-# 6. FUNGSI HYBRID AI DENGAN AUTO-DISCOVERY MODEL AKTIF
+# 6. FUNGSI MULTIMODAL HYBRID AI (TEKS, GAMBAR & FILE)
 # ==========================================
-def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, system_instruction):
+def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, system_instruction, has_image=False):
     errors_log = []
 
-    # LAPIS 1: GROQ CLOUD (DETEKSI OTOMATIS MODEL AKTIF)
-    if groq_key_list:
+    # LAPIS VISION: PRIORITASKAN GEMINI JIKA ADA GAMBAR
+    if gemini_key_list and has_image:
+        gem_keys = list(gemini_key_list)
+        random.shuffle(gem_keys)
+
+        gemini_contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=f"[INSTRUKSI SISTEM WAJIB DIIKUTI]:\n{system_instruction}")]
+            ),
+            types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Siap, saya RA'BUNG-NET AI siap menganalisis teks, file, dan gambar praktikum TJKT.")]
+            )
+        ]
+
+        for m in chat_messages:
+            role = "user" if m["role"] == "user" else "model"
+            parts_list = []
+            if isinstance(m["content"], list):
+                for item in m["content"]:
+                    if isinstance(item, str):
+                        parts_list.append(types.Part.from_text(text=item))
+                    elif type(item).__name__ == "Image" or hasattr(item, "verify") or "PIL" in str(type(item)):
+                        parts_list.append(types.Part.from_image(item))
+            else:
+                parts_list.append(types.Part.from_text(text=str(m["content"])))
+            
+            gemini_contents.append(types.Content(role=role, parts=parts_list))
+
+        for k in gem_keys:
+            try:
+                client = genai.Client(api_key=k)
+                active_gemini_models = []
+                try:
+                    for m in client.models.list():
+                        name = m.name.replace("models/", "")
+                        if "gemini" in name and not any(x in name for x in ["tts", "embedding", "audio", "veo", "imagen"]):
+                            active_gemini_models.append(name)
+                except Exception as e:
+                    errors_log.append(f"Gemini List Error: {e}")
+
+                preferred_gem = ["flash", "pro"]
+                sorted_gemini = []
+                for kw in preferred_gem:
+                    for m_id in active_gemini_models:
+                        if kw in m_id.lower() and m_id not in sorted_gemini:
+                            sorted_gemini.append(m_id)
+                for m_id in active_gemini_models:
+                    if m_id not in sorted_gemini:
+                        sorted_gemini.append(m_id)
+
+                for model_name in sorted_gemini:
+                    try:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=gemini_contents,
+                            config=types.GenerateContentConfig(temperature=0.3)
+                        )
+                        if response and response.text:
+                            return response.text, f"Google Vision ({model_name})"
+                    except Exception as e:
+                        errors_log.append(f"Gemini Vision [{model_name}]: {e}")
+                        continue
+            except Exception as e:
+                errors_log.append(f"Gemini Client Error: {e}")
+
+    # LAPIS 1 TEKS: GROQ CLOUD (JIKA TIDAK ADA GAMBAR)
+    if groq_key_list and not has_image:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
 
         groq_payload = [{"role": "system", "content": system_instruction}]
         for m in chat_messages:
             role = "user" if m["role"] == "user" else "assistant"
-            groq_payload.append({"role": role, "content": m["content"]})
+            content_val = m["content"]
+            if isinstance(content_val, list):
+                content_str = "\n".join([str(x) for x in content_val if isinstance(x, str)])
+            else:
+                content_str = str(content_val)
+            groq_payload.append({"role": role, "content": content_str})
 
         for k in g_keys:
             try:
@@ -117,8 +190,8 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
                         m_id = m.id
                         if not any(skip in m_id.lower() for skip in ["whisper", "guard", "tts", "vision", "embed", "playai", "allam"]):
                             active_groq_models.append(m_id)
-                except Exception as e:
-                    errors_log.append(f"Groq List Error: {e}")
+                except Exception:
+                    pass
 
                 preferred_keywords = ["llama-3.3", "llama-3.1", "llama3", "qwen", "deepseek", "mixtral", "gemma"]
                 sorted_groq_models = []
@@ -150,54 +223,28 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
             except Exception as e:
                 errors_log.append(f"Groq Client Error: {e}")
 
-    # LAPIS 2: GOOGLE GEMINI (DETEKSI OTOMATIS MODEL AKTIF)
+    # LAPIS 2 TEKS: GOOGLE GEMINI (FALLBACK TEKS)
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
 
         gemini_contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=f"[INSTRUKSI SISTEM WAJIB DIIKUTI]:\n{system_instruction}\n\nJika paham, jawab pertanyaan siswa berikut sesuai instruksi di atas.")]
-            ),
-            types.Content(
-                role="model",
-                parts=[types.Part.from_text(text="Siap, saya RA'BUNG-NET AI akan mematuhi seluruh instruksi tersebut.")]
-            )
+            types.Content(role="user", parts=[types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}")]),
+            types.Content(role="model", parts=[types.Part.from_text(text="Siap.")])
         ]
-
         for m in chat_messages:
             role = "user" if m["role"] == "user" else "model"
-            gemini_contents.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part.from_text(text=m["content"])]
-                )
-            )
+            content_val = m["content"]
+            if isinstance(content_val, list):
+                content_str = "\n".join([str(x) for x in content_val if isinstance(x, str)])
+            else:
+                content_str = str(content_val)
+            gemini_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=content_str)]))
 
         for k in gem_keys:
             try:
                 client = genai.Client(api_key=k)
-                active_gemini_models = []
-                try:
-                    for m in client.models.list():
-                        name = m.name.replace("models/", "")
-                        if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "image", "embedding", "vision", "audio", "veo", "imagen", "robotics", "computer-use"]):
-                            active_gemini_models.append(name)
-                except Exception as e:
-                    errors_log.append(f"Gemini List Error: {e}")
-
-                preferred_gem = ["flash-lite", "gemma-3", "flash"]
-                sorted_gemini = []
-                for kw in preferred_gem:
-                    for m_id in active_gemini_models:
-                        if kw in m_id.lower() and m_id not in sorted_gemini:
-                            sorted_gemini.append(m_id)
-                for m_id in active_gemini_models:
-                    if m_id not in sorted_gemini:
-                        sorted_gemini.append(m_id)
-
-                for model_name in sorted_gemini:
+                for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
                     try:
                         response = client.models.generate_content(
                             model=model_name,
@@ -212,10 +259,10 @@ def generate_hybrid_response(groq_key_list, gemini_key_list, chat_messages, syst
             except Exception as e:
                 errors_log.append(f"Gemini Client Error: {e}")
 
-    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Tidak ada model yang merespons.")
+    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Tidak ada model AI yang merespons.")
 
 # ==========================================
-# 7. SIDEBAR: LOGO, MODUL PRAKTIKUM & INFO KARYA
+# 7. SIDEBAR: LOGO, MODUL & INFO KARYA
 # ==========================================
 extra_modul_text = ""
 
@@ -229,7 +276,6 @@ with st.sidebar:
     st.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em;'>Asisten Virtual Praktikum TJKT<br><b>{ASAL_SEKOLAH}</b></p>", unsafe_allow_html=True)
     st.divider()
 
-    # BAGIAN BASIS PENGETAHUAN & UNDUH MODUL BAWAAN (DARI GITHUB)
     st.subheader("📚 Modul & Jobsheet Praktikum")
     if DAFTAR_MODUL:
         st.success(f"Tersedia {len(DAFTAR_MODUL)} Modul Praktikum Sekolah:")
@@ -241,27 +287,14 @@ with st.sidebar:
             with col_m2:
                 try:
                     with open(file_path, "rb") as f:
-                        st.download_button(
-                            label="⬇️",
-                            data=f,
-                            file_name=nama_file,
-                            mime="application/pdf",
-                            key=f"dl_{nama_file}",
-                            help=f"Unduh {nama_file}"
-                        )
+                        st.download_button("⬇️", f, file_name=nama_file, mime="application/pdf", key=f"dl_{nama_file}")
                 except Exception:
                     pass
     else:
-        st.info("Menggunakan Kurikulum Standar TJKT (Mikrotik, Cisco, Linux Debian/Ubuntu, & Subnetting).")
+        st.info("Menggunakan Kurikulum Standar TJKT.")
 
-    # FITUR UPLOAD MATERI PRAKTIKUM LANGSUNG DARI WEB
-    with st.expander("📤 Upload Materi Praktikum (PDF)", expanded=False):
-        uploaded_pdfs = st.file_uploader(
-            "Unggah Jobsheet/Modul PDF tambahan:",
-            type=["pdf"],
-            accept_multiple_files=True,
-            help="File PDF yang diunggah di sini akan langsung dipelajari oleh RA'BUNG-NET AI."
-        )
+    with st.expander("📤 Upload Modul Guru (PDF)", expanded=False):
+        uploaded_pdfs = st.file_uploader("Tambah Modul Referensi:", type=["pdf"], accept_multiple_files=True)
         if uploaded_pdfs:
             for up_file in uploaded_pdfs:
                 try:
@@ -270,16 +303,14 @@ with st.sidebar:
                     for page in reader.pages:
                         file_text += (page.extract_text() or "") + "\n"
                     if file_text.strip():
-                        extra_modul_text += f"\n--- ISI MODUL TAMBAHAN: {up_file.name} ---\n{file_text}\n"
+                        extra_modul_text += f"\n--- ISI MODUL: {up_file.name} ---\n{file_text}\n"
                         st.success(f"✅ Aktif: {up_file.name}")
                 except Exception as e:
-                    st.error(f"Gagal membaca {up_file.name}: {e}")
+                    st.error(f"Gagal: {e}")
 
     active_engines = []
-    if groq_keys:
-        active_engines.append("Groq LPU")
-    if gemini_keys:
-        active_engines.append("Google Gemini")
+    if groq_keys: active_engines.append("Groq LPU")
+    if gemini_keys: active_engines.append("Gemini Vision")
     if active_engines:
         st.caption(f"🟢 Mesin AI Aktif: **{' + '.join(active_engines)}**")
 
@@ -292,23 +323,8 @@ with st.sidebar:
         **Satuan Pendidikan:** {ASAL_SEKOLAH}  
         **Kategori:** {KATEGORI_KARYA}  
         
-        **Permasalahan:**  
-        Keterbatasan waktu guru saat mendampingi 30+ siswa praktikum jaringan & server secara bersamaan ketika terjadi *error* konfigurasi.
-        
         **Tujuan & Fungsi:**  
-        Menyediakan asisten AI 24/7 untuk mendiagnosis pesan *error* konfigurasi Mikrotik, Cisco, Linux Debian/Ubuntu, serta memandu perhitungan *subnetting* secara bertahap.
-        
-        **Manfaat:**  
-        Mempercepat *troubleshooting* mandiri siswa di laboratorium dan rumah, serta meningkatkan efisiensi bimbingan praktik guru.
-        """)
-
-    with st.expander("🛡️ Etika, Privasi & Orisinalitas", expanded=False):
-        st.markdown("""
-        **Keamanan & Privasi Data:**  
-        Pengguna dilarang memasukkan informasi sensitif, data pribadi, IP Publik produksi, atau *password* asli ke dalam percakapan.
-        
-        **Transparansi & Atribusi:**  
-        Aplikasi RA'BUNG-NET AI dikembangkan secara orisinal menggunakan Python, Streamlit, serta arsitektur Hybrid AI (Groq Cloud LPU & Google Gemini) berbasis Kurikulum SMK TJKT.
+        Asisten AI 24/7 berbasis Multimodal (Teks, File & Analisis Gambar/Screenshot) untuk troubleshooting jaringan Mikrotik, Cisco, Linux, dan Subnetting.
         """)
 
     if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
@@ -316,7 +332,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 8. HALAMAN UTAMA (HEADER DENGAN LOGO + RUANG CHAT)
+# 8. HALAMAN UTAMA & RIWAYAT CHAT
 # ==========================================
 if LOGO_PATH:
     col_h1, col_h2 = st.columns([1, 9])
@@ -325,14 +341,14 @@ if LOGO_PATH:
     with col_h2:
         st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
         st.write(
-            "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
-            "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
+            "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di dalam kotak chat bawah untuk mengirim **screenshot error** "
+            "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
         )
 else:
     st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
     st.write(
-        "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
-        "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
+        "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di dalam kotak chat bawah untuk mengirim **screenshot error** "
+        "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
     )
 
 st.divider()
@@ -343,35 +359,125 @@ if "messages" not in st.session_state:
             "role": "assistant",
             "content": (
                 "Halo Sobat TJKT! 👋 Saya **RA'BUNG-NET AI**, asisten praktikum virtualmu di **SMK Negeri 3 Tana Toraja**. "
-                "Ada kendala konfigurasi Mikrotik, Cisco Packet Tracer, Linux Server, atau perhitungan Subnetting hari ini? "
-                "Silakan ceritakan topologimu atau ketik pesan *error*-nya di bawah ini ya!"
+                "Kamu bisa langsung mengetik pertanyaan ATAU klik tombol **Lampirkan (`+` / 📎)** di sebelah kiri kolom ketik "
+                "untuk mengunggah **foto/screenshot error** maupun **file praktikum** untuk saya analisis!"
             )
         }
     ]
 
+# Tampilkan Riwayat Chat dengan Aman (Anti NameError)
 assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
-
 for msg in st.session_state.messages:
     avatar_icon = assistant_avatar if msg["role"] == "assistant" else "user"
     with st.chat_message(msg["role"], avatar=avatar_icon):
-        st.markdown(msg["content"])
-
-prompt_to_process = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi di sini...")
+        content = msg["content"]
+        if isinstance(content, list):
+            for item in content:
+                if type(item).__name__ == "Image" or hasattr(item, "verify") or "PIL" in str(type(item)):
+                    st.image(item, caption="Lampiran Gambar Siswa", width=350)
+                else:
+                    st.markdown(str(item))
+        else:
+            st.markdown(str(content))
 
 # ==========================================
-# 9. LOGIKA PEMROSESAN HYBRID AI
+# 9. KOLOM CHAT MODERN DENGAN TOMBOL UPLOAD MENYATU (ALA CHATGPT)
 # ==========================================
-if prompt_to_process:
-    st.session_state.messages.append({"role": "user", "content": prompt_to_process})
+user_text = None
+attached_files = []
+
+try:
+    # Fitur Native Streamlit Terbaru: Tombol '+' / Lampiran menyatu di dalam kotak chat_input!
+    chat_val = st.chat_input(
+        "Tanyakan kendala praktikum atau lampirkan foto/file lewat ikon di kiri...",
+        accept_file="multiple",
+        file_type=["png", "jpg", "jpeg", "pdf", "txt", "conf", "rsc", "log"]
+    )
+    if chat_val:
+        user_text = chat_val.text
+        attached_files = chat_val.files
+except TypeError:
+    # Fallback Otomatis jika Streamlit Cloud menggunakan versi lama: Tombol "+" Popover tepat di atas chat_input
+    with st.popover("➕ Add photos & files (Upload dari Komputer/HP)"):
+        fallback_files = st.file_uploader(
+            "Pilih gambar screenshot error atau file praktikum:",
+            type=["png", "jpg", "jpeg", "pdf", "txt", "conf", "rsc", "log"],
+            accept_multiple_files=True,
+            key="fallback_uploader"
+        )
+    raw_prompt = st.chat_input("Tanyakan kendala praktikum atau ketik pesan di sini...")
+    if raw_prompt or fallback_files:
+        user_text = raw_prompt
+        attached_files = fallback_files if fallback_files else []
+
+# ==========================================
+# 10. PEMROSESAN PESAN, GAMBAR & FILE DARI SISWA
+# ==========================================
+if user_text or attached_files:
+    current_content = []
+    images_for_display = []
+    file_names_info = []
+    has_image_attachment = False
+
+    # Proses semua file atau foto yang dilampirkan siswa
+    for f in attached_files:
+        fname_lower = f.name.lower()
+        if fname_lower.endswith((".png", ".jpg", ".jpeg")):
+            try:
+                pil_img = Image.open(f)
+                current_content.append(pil_img)
+                images_for_display.append(pil_img)
+                has_image_attachment = True
+            except Exception:
+                pass
+        elif fname_lower.endswith(".pdf"):
+            try:
+                reader = PdfReader(f)
+                pdf_extracted = ""
+                for p in reader.pages:
+                    pdf_extracted += (p.extract_text() or "") + "\n"
+                if pdf_extracted.strip():
+                    current_content.append(f"\n[LAMPIRAN FILE PDF SISWA ({f.name})]:\n{pdf_extracted[:8000]}\n")
+                    file_names_info.append(f"📄 `{f.name}`")
+            except Exception:
+                pass
+        else:
+            # Untuk file teks konfigurasi (.txt, .conf, .rsc Mikrotik, .log)
+            try:
+                txt_extracted = f.read().decode("utf-8", errors="ignore")
+                if txt_extracted.strip():
+                    current_content.append(f"\n[LAMPIRAN FILE KONFIGURASI SISWA ({f.name})]:\n```\n{txt_extracted[:8000]}\n```\n")
+                    file_names_info.append(f"📝 `{f.name}`")
+            except Exception:
+                pass
+
+    # Tambahkan teks pertanyaan dari siswa
+    if user_text:
+        current_content.append(user_text)
+    else:
+        current_content.append("Tolong analisis lampiran gambar/file praktikum ini dan jelaskan langkah-langkah penyelesaiannya.")
+
+    # Simpan ke riwayat percakapan
+    st.session_state.messages.append({"role": "user", "content": current_content})
+
+    # Tampilkan pesan siswa di layar
     with st.chat_message("user"):
-        st.markdown(prompt_to_process)
+        for img in images_for_display:
+            st.image(img, caption="Screenshot yang dikirim", width=350)
+        if file_names_info:
+            st.caption("Lampiran dokumen: " + ", ".join(file_names_info))
+        if user_text:
+            st.markdown(user_text)
+        elif not user_text:
+            st.markdown("*[Mengirim lampiran untuk dianalisis]*")
 
+    # Jalankan Analisis Hybrid AI
     if not groq_keys and not gemini_keys:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            st.error("⚠️ API Key belum terbaca di Streamlit Secrets. Pastikan Anda sudah memasukkan GROQ_API_KEY = \"gsk_...\" di menu Settings -> Secrets.")
+            st.error("⚠️ API Key belum diatur di Streamlit Secrets.")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            with st.spinner("RA'BUNG-NET AI sedang menganalisis konfigurasi & menyusun langkah troubleshooting..."):
+            with st.spinner("RA'BUNG-NET AI sedang menganalisis lampiran & menyusun panduan troubleshooting..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     gabungan_modul = (MODUL_TEXT + "\n" + extra_modul_text).strip()
@@ -379,8 +485,8 @@ if prompt_to_process:
                         full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{gabungan_modul[:15000]}"
 
                     recent_messages = st.session_state.messages[-4:]
-                    reply, used_engine = generate_hybrid_response(
-                        groq_keys, gemini_keys, recent_messages, full_system_instruction
+                    reply, used_engine = generate_multimodal_response(
+                        groq_keys, gemini_keys, recent_messages, full_system_instruction, has_image=has_image_attachment
                     )
 
                     st.markdown(reply)
@@ -388,7 +494,7 @@ if prompt_to_process:
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
                 except Exception as e:
-                    st.error("⏳ Maaf, terjadi kendala saat menghubungi server AI.")
+                    st.error("⏳ Maaf, terjadi kendala saat menganalisis pesan/lampiran.")
                     with st.expander("🔍 Lihat Detail Teknis Error (Untuk Guru)"):
                         st.code(str(e))
 # --- AKHIR DARI FILE APP.PY ---
