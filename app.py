@@ -15,8 +15,8 @@ st.set_page_config(
 )
 
 # Ubah data di bawah ini sesuai identitas Anda
-NAMA_GURU = "Adinegoro Mangentang"
-ASAL_SEKOLAH = "SMKN 3 Tana Toraja"
+NAMA_GURU = "Nama Anda, S.Kom., Gr."
+ASAL_SEKOLAH = "SMKN 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
@@ -190,6 +190,8 @@ if "messages" not in st.session_state:
         }
     ]
 
+st.markdown("##### 💡 Uji Coba Cepat (Klik salah satu skenario praktikum):")
+col1, col2, col3, col4 = st.columns(4)
 
 sample_prompt = None
 with col1:
