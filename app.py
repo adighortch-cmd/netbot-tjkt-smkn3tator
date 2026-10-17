@@ -95,66 +95,108 @@ except Exception:
     pass
 
 # ==========================================
-# 6. FUNGSI KONVERSI GAMBAR KE BYTES & BASE64
+# 6. FUNGSI KONVERSI GAMBAR KE JPEG BYTES MURNI
 # ==========================================
-def pil_to_jpeg_bytes_and_b64(pil_img):
+def convert_uploaded_image_to_jpeg_bytes(uploaded_file):
+    uploaded_file.seek(0)
+    raw_bytes = uploaded_file.read()
+    pil_img = Image.open(io.BytesIO(raw_bytes))
     rgb_im = pil_img.convert("RGB")
-    rgb_im.thumbnail((1280, 1280)) # Kompresi ukuran agar cepat diproses AI
+    rgb_im.thumbnail((1280, 1280))
     buf = io.BytesIO()
     rgb_im.save(buf, format="JPEG", quality=85)
-    img_bytes = buf.getvalue()
-    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-    return img_bytes, img_b64
-
-def is_pil_image(obj):
-    return type(obj).__name__ == "Image" or hasattr(obj, "verify") or "PIL" in str(type(obj))
+    return buf.getvalue()
 
 # ==========================================
-# 7. FUNGSI MULTIMODAL HYBRID AI (GROQ VISION + GEMINI VISION)
+# 7. FUNGSI MULTIMODAL HYBRID AI (TEKS, GAMBAR & FILE)
 # ==========================================
-def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, system_instruction, has_image=False):
+def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, system_instruction, image_bytes_list=None):
     errors_log = []
 
     # ---------------------------------------------------------
-    # A. JIKA ADA GAMBAR: COBA GROQ VISION & GEMINI VISION
+    # A. JIKA ADA GAMBAR: WAJIB GUNAKAN MODEL VISION (TIDAK BOLEH JATUH KE MODEL TEKS)
     # ---------------------------------------------------------
-    if has_image:
-        # Ambil pesan terakhir yang berisi gambar dan teks
-        last_msg = chat_messages[-1]["content"]
-        text_prompt = "Tolong analisis gambar praktikum/error ini dan berikan solusi langkah demi langkah."
-        images_list = []
+    if image_bytes_list:
+        last_msg = chat_messages[-1]
+        user_question = last_msg.get("text", "").strip()
+        if not user_question:
+            user_question = "Tolong analisis gambar screenshot praktikum/konfigurasi/error ini secara detail dan berikan langkah troubleshooting-nya."
 
-        if isinstance(last_msg, list):
-            texts = [str(x) for x in last_msg if isinstance(x, str)]
-            if texts:
-                text_prompt = "\n".join(texts)
-            images_list = [x for x in last_msg if is_pil_image(x)]
+        target_img_bytes = image_bytes_list[-1]
+        img_b64 = base64.b64encode(target_img_bytes).decode("utf-8")
 
-        # 1. Coba GROQ VISION terlebih dahulu (Sangat cepat)
-        if groq_key_list and images_list:
+        # 1. Coba GOOGLE GEMINI VISION (Sangat akurat membaca teks di dalam screenshot)
+        if gemini_key_list:
+            gem_keys = list(gemini_key_list)
+            random.shuffle(gem_keys)
+
+            parts_payload = [
+                types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR TERLAMPIR]:\n{user_question}"),
+                types.Part.from_bytes(data=target_img_bytes, mime_type="image/jpeg")
+            ]
+
+            for k in gem_keys:
+                try:
+                    client = genai.Client(api_key=k)
+                    gem_models = []
+                    try:
+                        for m in client.models.list():
+                            name = m.name.replace("models/", "")
+                            if ("gemini" in name or "gemma-3" in name) and not any(x in name for x in ["tts", "audio", "embedding", "imagen", "veo"]):
+                                gem_models.append(name)
+                    except Exception:
+                        pass
+
+                    preferred_order = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "flash"]
+                    sorted_gem = []
+                    for kw in preferred_order:
+                        for m_id in gem_models:
+                            if kw in m_id and m_id not in sorted_gem:
+                                sorted_gem.append(m_id)
+                    for m_id in gem_models:
+                        if m_id not in sorted_gem:
+                            sorted_gem.append(m_id)
+                    if not sorted_gem:
+                        sorted_gem = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+
+                    for m_name in sorted_gem:
+                        try:
+                            response = client.models.generate_content(
+                                model=m_name,
+                                contents=[types.Content(role="user", parts=parts_payload)],
+                                config=types.GenerateContentConfig(temperature=0.3)
+                            )
+                            if response and response.text:
+                                return response.text, f"Google Vision ({m_name})"
+                        except Exception as e:
+                            errors_log.append(f"GeminiVision [{m_name}]: {e}")
+                            continue
+                except Exception as e:
+                    errors_log.append(f"Gemini Client: {e}")
+
+        # 2. Coba GROQ VISION (Llama 4 Scout / Maverick Vision)
+        if groq_key_list:
             g_keys = list(groq_key_list)
             random.shuffle(g_keys)
-            _, img_b64 = pil_to_jpeg_bytes_and_b64(images_list[-1])
 
             vision_content = [
-                {"type": "text", "text": f"{system_instruction}\n\nPertanyaan Siswa:\n{text_prompt}"},
+                {"type": "text", "text": f"{system_instruction}\n\nPertanyaan Siswa terkait gambar ini:\n{user_question}"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
 
             for k in g_keys:
                 try:
                     client = Groq(api_key=k)
-                    # Deteksi model vision aktif di Groq
                     vision_models = [
                         "meta-llama/llama-4-scout-17b-16e-instruct",
-                        "meta-llama/llama-4-maverick-17b-128e-instruct",
-                        "llama-3.2-90b-vision-preview",
-                        "llama-3.2-11b-vision-preview"
+                        "meta-llama/llama-4-maverick-17b-128e-instruct"
                     ]
                     try:
                         for m in client.models.list().data:
-                            if any(v in m.id.lower() for v in ["vision", "llama-4", "pixtral"]) and m.id not in vision_models:
-                                vision_models.insert(0, m.id)
+                            m_id = m.id
+                            if any(v in m_id.lower() for v in ["llama-4", "vision", "pixtral"]) and "guard" not in m_id.lower():
+                                if m_id not in vision_models:
+                                    vision_models.append(m_id)
                     except Exception:
                         pass
 
@@ -175,47 +217,10 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                 except Exception as e:
                     errors_log.append(f"Groq Client: {e}")
 
-        # 2. Coba GOOGLE GEMINI VISION (Menggunakan Part.from_bytes yang stabil)
-        if gemini_key_list and images_list:
-            gem_keys = list(gemini_key_list)
-            random.shuffle(gem_keys)
-            img_bytes, _ = pil_to_jpeg_bytes_and_b64(images_list[-1])
-
-            parts_payload = [
-                types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\nPertanyaan Siswa:\n{text_prompt}"),
-                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-            ]
-
-            for k in gem_keys:
-                try:
-                    client = genai.Client(api_key=k)
-                    gem_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-                    try:
-                        for m in client.models.list():
-                            name = m.name.replace("models/", "")
-                            if "gemini" in name and "flash" in name and not any(x in name for x in ["tts", "audio", "embedding"]):
-                                if name not in gem_models:
-                                    gem_models.append(name)
-                    except Exception:
-                        pass
-
-                    for m_name in gem_models:
-                        try:
-                            response = client.models.generate_content(
-                                model=m_name,
-                                contents=[types.Content(role="user", parts=parts_payload)],
-                                config=types.GenerateContentConfig(temperature=0.3)
-                            )
-                            if response and response.text:
-                                return response.text, f"Google Vision ({m_name})"
-                        except Exception as e:
-                            errors_log.append(f"GeminiVision [{m_name}]: {e}")
-                            continue
-                except Exception as e:
-                    errors_log.append(f"Gemini Client: {e}")
+        raise RuntimeError("Gagal menganalisis gambar. Detail: " + (" | ".join(errors_log[-3:]) if errors_log else "Model Vision tidak merespons."))
 
     # ---------------------------------------------------------
-    # B. JIKA TEKS / FILE BIASA (ATAU FALLBACK)
+    # B. JIKA TEKS / FILE DOKUMEN (TANPA GAMBAR)
     # ---------------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
@@ -224,13 +229,9 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
         groq_payload = [{"role": "system", "content": system_instruction}]
         for m in chat_messages:
             role = "user" if m["role"] == "user" else "assistant"
-            content_val = m["content"]
-            if isinstance(content_val, list):
-                content_str = "\n".join([str(x) for x in content_val if isinstance(x, str)])
-            else:
-                content_str = str(content_val)
-            if content_str.strip():
-                groq_payload.append({"role": role, "content": content_str})
+            text_val = m.get("text", "").strip()
+            if text_val:
+                groq_payload.append({"role": role, "content": text_val})
 
         for k in g_keys:
             try:
@@ -284,13 +285,9 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
         ]
         for m in chat_messages:
             role = "user" if m["role"] == "user" else "model"
-            content_val = m["content"]
-            if isinstance(content_val, list):
-                content_str = "\n".join([str(x) for x in content_val if isinstance(x, str)])
-            else:
-                content_str = str(content_val)
-            if content_str.strip():
-                gemini_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=content_str)]))
+            text_val = m.get("text", "").strip()
+            if text_val:
+                gemini_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=text_val)]))
 
         for k in gem_keys:
             try:
@@ -310,7 +307,7 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
             except Exception as e:
                 errors_log.append(f"Gemini Client Error: {e}")
 
-    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Pastikan GROQ_API_KEY atau GEMINI_API_KEY aktif di Streamlit Secrets.")
+    raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Pastikan API Key aktif di Streamlit Secrets.")
 
 # ==========================================
 # 8. SIDEBAR: LOGO, MODUL & INFO KARYA
@@ -349,6 +346,7 @@ with st.sidebar:
         if uploaded_pdfs:
             for up_file in uploaded_pdfs:
                 try:
+                    up_file.seek(0)
                     reader = PdfReader(up_file)
                     file_text = ""
                     for page in reader.pages:
@@ -392,43 +390,49 @@ if LOGO_PATH:
     with col_h2:
         st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
         st.write(
-            "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di dalam kotak chat bawah untuk mengirim **screenshot error** "
+            "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di sebelah kiri kotak chat bawah untuk mengirim **screenshot error** "
             "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
         )
 else:
     st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
     st.write(
-        "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di dalam kotak chat bawah untuk mengirim **screenshot error** "
+        "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di sebelah kiri kotak chat bawah untuk mengirim **screenshot error** "
         "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
     )
 
 st.divider()
 
+# Struktur session_state.messages diseragamkan menggunakan dictionary {"role", "text", "images", "files"}
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": (
+            "text": (
                 "Halo Sobat TJKT! 👋 Saya **RA'BUNG-NET AI**, asisten praktikum virtualmu di **SMK Negeri 3 Tana Toraja**. "
                 "Kamu bisa langsung mengetik pertanyaan ATAU klik tombol **Lampirkan (`+` / 📎)** di sebelah kiri kolom ketik "
                 "untuk mengunggah **foto/screenshot error** maupun **file praktikum** untuk saya analisis!"
-            )
+            ),
+            "images": [],
+            "files": []
         }
     ]
 
 assistant_avatar = LOGO_PATH if LOGO_PATH else "assistant"
 for msg in st.session_state.messages:
+    # Kompatibilitas jika masih ada format state lama
+    if "text" not in msg and "content" in msg:
+        msg["text"] = str(msg["content"]) if not isinstance(msg["content"], list) else ""
+        msg["images"] = []
+        msg["files"] = []
+
     avatar_icon = assistant_avatar if msg["role"] == "assistant" else "user"
     with st.chat_message(msg["role"], avatar=avatar_icon):
-        content = msg["content"]
-        if isinstance(content, list):
-            for item in content:
-                if is_pil_image(item):
-                    st.image(item, caption="Lampiran Gambar Siswa", width=350)
-                else:
-                    st.markdown(str(item))
-        else:
-            st.markdown(str(content))
+        for img_bytes in msg.get("images", []):
+            st.image(img_bytes, caption="Lampiran Gambar Siswa", width=350)
+        if msg.get("files"):
+            st.caption("📎 Lampiran File: " + ", ".join(msg["files"]))
+        if msg.get("text"):
+            st.markdown(msg["text"])
 
 # ==========================================
 # 10. KOLOM CHAT MODERN DENGAN TOMBOL UPLOAD MENYATU
@@ -438,18 +442,18 @@ attached_files = []
 
 try:
     chat_val = st.chat_input(
-        "Tanyakan kendala praktikum atau lampirkan foto/file lewat ikon di kiri...",
+        "Tanyakan kendala praktikum atau lampirkan foto/file lewat ikon (+) di kiri...",
         accept_file="multiple",
-        file_type=["png", "jpg", "jpeg", "pdf", "txt", "conf", "rsc", "log"]
+        file_type=["png", "jpg", "jpeg", "webp", "pdf", "txt", "conf", "rsc", "log"]
     )
     if chat_val:
         user_text = chat_val.text
-        attached_files = chat_val.files
+        attached_files = chat_val.files if hasattr(chat_val, "files") and chat_val.files else []
 except TypeError:
     with st.popover("➕ Add photos & files (Upload dari Komputer/HP)"):
         fallback_files = st.file_uploader(
             "Pilih gambar screenshot error atau file praktikum:",
-            type=["png", "jpg", "jpeg", "pdf", "txt", "conf", "rsc", "log"],
+            type=["png", "jpg", "jpeg", "webp", "pdf", "txt", "conf", "rsc", "log"],
             accept_multiple_files=True,
             key="fallback_uploader"
         )
@@ -462,64 +466,80 @@ except TypeError:
 # 11. PEMROSESAN PESAN, GAMBAR & FILE DARI SISWA
 # ==========================================
 if user_text or attached_files:
-    current_content = []
-    images_for_display = []
+    image_bytes_list = []
     file_names_info = []
-    has_image_attachment = False
+    extracted_docs_text = ""
 
     for f in attached_files:
-        fname_lower = f.name.lower()
-        if fname_lower.endswith((".png", ".jpg", ".jpeg")):
+        fname = getattr(f, "name", "lampiran")
+        fname_lower = fname.lower()
+        mime_type = getattr(f, "type", "").lower()
+
+        # Deteksi akurat apakah file yang diunggah adalah gambar
+        is_image_file = fname_lower.endswith((".png", ".jpg", ".jpeg", ".webp")) or "image" in mime_type
+
+        if is_image_file:
             try:
-                pil_img = Image.open(f)
-                current_content.append(pil_img)
-                images_for_display.append(pil_img)
-                has_image_attachment = True
-            except Exception:
-                pass
-        elif fname_lower.endswith(".pdf"):
+                img_bytes = convert_uploaded_image_to_jpeg_bytes(f)
+                image_bytes_list.append(img_bytes)
+                file_names_info.append(f"🖼️ `{fname}`")
+            except Exception as e:
+                st.warning(f"Gagal memproses gambar {fname}: {e}")
+        elif fname_lower.endswith(".pdf") or "pdf" in mime_type:
             try:
+                f.seek(0)
                 reader = PdfReader(f)
                 pdf_extracted = ""
                 for p in reader.pages:
                     pdf_extracted += (p.extract_text() or "") + "\n"
                 if pdf_extracted.strip():
-                    current_content.append(f"\n[LAMPIRAN FILE PDF SISWA ({f.name})]:\n{pdf_extracted[:8000]}\n")
-                    file_names_info.append(f"📄 `{f.name}`")
-            except Exception:
-                pass
+                    extracted_docs_text += f"\n\n=== ISI FILE PDF YANG DIUNGGAH SISWA ({fname}) ===\n{pdf_extracted[:10000]}\n=====================================\n"
+                    file_names_info.append(f"📄 `{fname}`")
+                else:
+                    file_names_info.append(f"📄 `{fname}` (PDF hasil scan/gambar)")
+            except Exception as e:
+                st.warning(f"Gagal membaca PDF {fname}: {e}")
         else:
             try:
+                f.seek(0)
                 txt_extracted = f.read().decode("utf-8", errors="ignore")
                 if txt_extracted.strip():
-                    current_content.append(f"\n[LAMPIRAN FILE KONFIGURASI SISWA ({f.name})]:\n```\n{txt_extracted[:8000]}\n```\n")
-                    file_names_info.append(f"📝 `{f.name}`")
-            except Exception:
-                pass
+                    extracted_docs_text += f"\n\n=== ISI FILE KONFIGURASI/TEKS SISWA ({fname}) ===\n```\n{txt_extracted[:10000]}\n```\n=====================================\n"
+                    file_names_info.append(f"📝 `{fname}`")
+            except Exception as e:
+                st.warning(f"Gagal membaca file {fname}: {e}")
 
-    if user_text:
-        current_content.append(user_text)
-    else:
-        current_content.append("Tolong analisis lampiran gambar/file praktikum ini dan jelaskan langkah-langkah penyelesaiannya.")
+    # Susun teks pertanyaan yang akan dikirim ke AI
+    display_text = user_text if user_text else "*[Mengirim lampiran untuk dianalisis]*"
+    ai_prompt_text = user_text if user_text else "Tolong analisis lampiran yang saya kirimkan ini secara detail dan berikan langkah-langkah penyelesaiannya."
 
-    st.session_state.messages.append({"role": "user", "content": current_content})
+    if extracted_docs_text:
+        ai_prompt_text = f"{ai_prompt_text}\n{extracted_docs_text}"
 
+    # Simpan ke riwayat percakapan
+    st.session_state.messages.append({
+        "role": "user",
+        "text": ai_prompt_text,
+        "display_text": display_text,
+        "images": image_bytes_list,
+        "files": file_names_info
+    })
+
+    # Tampilkan pesan siswa di layar
     with st.chat_message("user"):
-        for img in images_for_display:
-            st.image(img, caption="Screenshot yang dikirim", width=350)
+        for img_b in image_bytes_list:
+            st.image(img_b, caption="Screenshot dikirim ke AI", width=350)
         if file_names_info:
-            st.caption("Lampiran dokumen: " + ", ".join(file_names_info))
-        if user_text:
-            st.markdown(user_text)
-        elif not user_text:
-            st.markdown("*[Mengirim lampiran untuk dianalisis]*")
+            st.caption("📎 Lampiran terkirim: " + ", ".join(file_names_info))
+        st.markdown(display_text)
 
+    # Jalankan Analisis Hybrid AI
     if not groq_keys and not gemini_keys:
         with st.chat_message("assistant", avatar=assistant_avatar):
             st.error("⚠️ API Key belum diatur di Streamlit Secrets.")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            with st.spinner("RA'BUNG-NET AI sedang menganalisis gambar & menyusun langkah troubleshooting..."):
+            with st.spinner("RA'BUNG-NET AI sedang memeriksa isi lampiran & menyusun panduan troubleshooting..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     gabungan_modul = (MODUL_TEXT + "\n" + extra_modul_text).strip()
@@ -528,15 +548,24 @@ if user_text or attached_files:
 
                     recent_messages = st.session_state.messages[-4:]
                     reply, used_engine = generate_multimodal_response(
-                        groq_keys, gemini_keys, recent_messages, full_system_instruction, has_image=has_image_attachment
+                        groq_keys,
+                        gemini_keys,
+                        recent_messages,
+                        full_system_instruction,
+                        image_bytes_list=image_bytes_list
                     )
 
                     st.markdown(reply)
                     st.caption(f"⚡ Dijawab melalui mesin: `{used_engine}`")
-                    st.session_state.messages.append({"role": "assistant", "content": reply})
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "text": reply,
+                        "images": [],
+                        "files": []
+                    })
 
                 except Exception as e:
-                    st.error("⏳ Maaf, terjadi kendala saat menganalisis pesan/lampiran.")
+                    st.error("⏳ Maaf, terjadi kendala saat menganalisis lampiran.")
                     with st.expander("🔍 Lihat Detail Teknis Error (Untuk Guru)"):
                         st.code(str(e))
 # --- AKHIR DARI FILE APP.PY ---
