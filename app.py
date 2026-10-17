@@ -9,13 +9,13 @@ from pypdf import PdfReader
 # 1. KONFIGURASI HALAMAN & IDENTITAS KARYA
 # ==========================================
 st.set_page_config(
-    page_title="NetBot TJKT SMKN 3 Tana Toraja - Asisten Praktikum Jaringan & Linux",
+    page_title="NetBot TJKT - Asisten Praktikum Jaringan & Linux",
     page_icon="🌐",
     layout="wide"
 )
 
 # Ubah data di bawah ini sesuai identitas Anda
-NAMA_GURU = "Adinegoro Mangentang"
+NAMA_GURU = "Nama Anda, S.Kom., Gr."
 ASAL_SEKOLAH = "SMKN 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
@@ -137,4 +137,101 @@ with st.sidebar:
     else:
         st.info("Menggunakan Kurikulum Standar TJKT (Mikrotik, Cisco, Linux Debian/Ubuntu, & Subnetting).")
 
-    st.divider
+    st.divider()
+
+    # Informasi Wajib Sesuai Juknis Bab V.D (Untuk Pemeriksaan Validator)
+    with st.expander("📋 Identitas & Deskripsi Karya", expanded=False):
+        st.markdown(f"""
+        **Pembuat:** {NAMA_GURU}  
+        **Satuan Pendidikan:** {ASAL_SEKOLAH}  
+        **Kategori:** {KATEGORI_KARYA}  
+        
+        **Permasalahan:**  
+        Keterbatasan waktu guru saat mendampingi 30+ siswa praktikum jaringan & server secara bersamaan ketika terjadi *error* konfigurasi.
+        
+        **Tujuan & Fungsi:**  
+        Menyediakan asisten AI 24/7 untuk mendiagnosis pesan *error* konfigurasi Mikrotik, Cisco, Linux Debian/Ubuntu, serta memandu perhitungan *subnetting* secara bertahap.
+        
+        **Manfaat:**  
+        Mempercepat *troubleshooting* mandiri siswa di laboratorium dan rumah, serta meningkatkan efisiensi bimbingan praktik guru.
+        """)
+
+    with st.expander("🛡️ Etika, Privasi & Orisinalitas", expanded=False):
+        st.markdown("""
+        **Keamanan & Privasi Data:**  
+        Pengguna dilarang memasukkan informasi sensitif, data pribadi, IP Publik produksi, atau *password* asli ke dalam percakapan.
+        
+        **Transparansi & Atribusi:**  
+        Aplikasi ini dikembangkan secara orisinal menggunakan Python, Streamlit, dan model AI Google Gemini terbaru dengan instruksi khusus berbasis Kurikulum SMK TJKT.
+        """)
+
+    if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
+
+# ==========================================
+# 7. HALAMAN UTAMA (RUANG CHAT LANGSUNG)
+# ==========================================
+st.header("🤖 Asisten Troubleshooting Jaringan & Server Linux (TJKT)")
+st.write(
+    "Mengalami *error* saat konfigurasi **Mikrotik, Cisco, Linux Server (Debian/Ubuntu)**, atau bingung menghitung **Subnetting**? "
+    "Ketik pertanyaan atau tempelkan pesan *error* yang muncul di layar kamu pada kolom chat di bawah ini!"
+)
+st.divider()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "Halo Sobat TJKT! 👋 Saya **NetBot**, asisten praktikum virtualmu. "
+                "Ada kendala konfigurasi Mikrotik, Cisco Packet Tracer, Linux Server, atau perhitungan Subnetting hari ini? "
+                "Silakan ceritakan topologimu atau ketik pesan *error*-nya di bawah ini ya!"
+            )
+        }
+    ]
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+prompt_to_process = st.chat_input("Ketik pertanyaan atau tempel pesan error konfigurasi di sini...")
+
+# ==========================================
+# 8. LOGIKA PEMROSESAN AI GEMINI
+# ==========================================
+if prompt_to_process:
+    st.session_state.messages.append({"role": "user", "content": prompt_to_process})
+    with st.chat_message("user"):
+        st.markdown(prompt_to_process)
+
+    if not api_key:
+        with st.chat_message("assistant"):
+            st.error("⚠️ Sistem sedang dalam pemeliharaan (API Key belum diatur oleh Guru di menu Settings -> Secrets Streamlit Cloud).")
+    else:
+        with st.chat_message("assistant"):
+            with st.spinner("Menganalisis konfigurasi & menyusun langkah troubleshooting..."):
+                try:
+                    client = genai.Client(api_key=api_key)
+
+                    full_system_instruction = BASE_SYSTEM_PROMPT
+                    if MODUL_TEXT:
+                        full_system_instruction += f"\n\nBERIKUT ADALAH ISI MODUL/JOBSHEET RESMI SEKOLAH SEBAGAI ACUAN UTAMA:\n{MODUL_TEXT[:30000]}"
+
+                    contents = []
+                    for m in st.session_state.messages:
+                        role = "user" if m["role"] == "user" else "model"
+                        contents.append(
+                            types.Content(
+                                role=role,
+                                parts=[types.Part.from_text(text=m["content"])]
+                            )
+                        )
+
+                    reply, used_model = generate_ai_response(client, contents, full_system_instruction)
+
+                    st.markdown(reply)
+                    st.session_state.messages.append({"role": "assistant", "content": reply})
+
+                except Exception as e:
+                    st.error(f"Terjadi kendala teknis saat menghubungi AI: {e}")
