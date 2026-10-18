@@ -71,7 +71,7 @@ def load_builtin_modules(pdf_files_tuple):
             if file_text.strip():
                 combined_text += f"\n--- ISI MODUL: {os.path.basename(pdf_path)} ---\n{file_text}\n"
             else:
-                combined_text += f"\n--- MODUL TERSEDIA: {os.path.basename(pdf_path)} (Berisi materi/diagram visual) ---\n"
+                combined_text += f"\n--- MODUL TERSEDIA: {os.path.basename(pdf_path)} ---\n"
         except Exception:
             continue
     return combined_text, loaded_files
@@ -86,13 +86,11 @@ BASE_SYSTEM_PROMPT = f"""
 Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
 Tugas utamamu adalah membantu siswa memahami materi TJKT (termasuk Cloud Computing, Jaringan, Server), melakukan troubleshooting konfigurasi (Mikrotik RouterOS, Cisco IOS, Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, serta menganalisis gambar infografis, screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
 
-Aturan Respons dan Pedagogis:
-1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa. Gunakan Bahasa Indonesia yang jelas dan mudah dipahami siswa SMK.
-2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau letak kesalahannya secara terstruktur dan mudah dipahami.
-3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data visual/teks gambar yang diberikan.
-4. Berikan daftar periksa pengecekan (troubleshooting checklist) jika terkait error konfigurasi jaringan/server.
-5. Untuk pertanyaan Subnetting, jelaskan langkah-langkah cara menghitungnya secara bertahap.
-6. Ingatkan siswa untuk selalu menjaga keamanan jaringan dan tidak membagikan password asli/publik di dalam percakapan.
+Aturan Respons:
+1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa SMK.
+2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau langkah perbaikannya secara terstruktur dan jelas.
+3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
+4. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap dan ringkas.
 """
 
 # ==========================================
@@ -135,13 +133,12 @@ def convert_uploaded_image_to_jpeg_bytes(uploaded_file):
     raw_bytes = uploaded_file.read()
     pil_img = Image.open(io.BytesIO(raw_bytes))
     rgb_im = pil_img.convert("RGB")
-    rgb_im.thumbnail((1280, 1280))
+    rgb_im.thumbnail((1024, 1024))
     buf = io.BytesIO()
-    rgb_im.save(buf, format="JPEG", quality=82)
+    rgb_im.save(buf, format="JPEG", quality=80)
     return buf.getvalue()
 
 def extract_text_from_image_ocr(img_bytes):
-    """Membaca teks di dalam gambar (infografis/screenshot) agar tetap bisa dianalisis oleh model teks Groq."""
     img_b64 = base64.b64encode(img_bytes).decode("utf-8")
     for engine_num in ["2", "1"]:
         try:
@@ -157,7 +154,7 @@ def extract_text_from_image_ocr(img_bytes):
                 data=payload,
                 headers={"User-Agent": "Mozilla/5.0"}
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 parsed_list = result.get("ParsedResults", [])
                 if parsed_list:
@@ -169,7 +166,7 @@ def extract_text_from_image_ocr(img_bytes):
     return ""
 
 # ==========================================
-# 7. FUNGSI MULTIMODAL HYBRID AI (ANTI GAGAL SAAT UPLOAD GAMBAR)
+# 7. FUNGSI MULTIMODAL HYBRID AI (HEMAT TOKEN & ANTI 413/429)
 # ==========================================
 def generate_multimodal_response(
     groq_key_list,
@@ -180,10 +177,9 @@ def generate_multimodal_response(
     image_names_list=None
 ):
     errors_log = []
-    ocr_extracted_text = ""
 
     # ---------------------------------------------------------
-    # A. JIKA ADA GAMBAR: COBA VISION AI -> JIKA 404, GUNAKAN OCR + GROQ LPU
+    # A. JIKA ADA GAMBAR: COBA VISION AI -> JIKA GAGAL, GUNAKAN OCR + GROQ
     # ---------------------------------------------------------
     if image_bytes_list:
         last_msg = chat_messages[-1]
@@ -195,30 +191,20 @@ def generate_multimodal_response(
         img_b64 = base64.b64encode(target_img_bytes).decode("utf-8")
         img_names_str = ", ".join(image_names_list) if image_names_list else "gambar_praktikum.png"
 
-        # 1. COBA GOOGLE GEMINI VISION (Jika GEMINI_API_KEY tersedia)
+        # 1. COBA GOOGLE GEMINI VISION
         if gemini_key_list:
             gem_keys = list(gemini_key_list)
             random.shuffle(gem_keys)
 
             parts_payload = [
-                types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR ({img_names_str})]:\n{user_question}"),
+                types.Part.from_text(text=f"[INSTRUKSI]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR ({img_names_str})]:\n{user_question}"),
                 types.Part.from_bytes(data=target_img_bytes, mime_type="image/jpeg")
             ]
 
             for k in gem_keys:
                 try:
                     client = genai.Client(api_key=k)
-                    available_gem_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-                    try:
-                        for m in client.models.list():
-                            name = m.name.replace("models/", "")
-                            if ("gemini" in name or "gemma" in name) and not any(x in name for x in ["tts", "audio", "embedding", "imagen", "veo", "aqa"]):
-                                if name not in available_gem_models:
-                                    available_gem_models.append(name)
-                    except Exception:
-                        pass
-
-                    for m_name in available_gem_models:
+                    for m_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
                         try:
                             response = client.models.generate_content(
                                 model=m_name,
@@ -228,18 +214,18 @@ def generate_multimodal_response(
                             if response and response.text:
                                 return response.text, f"Google Vision ({m_name})"
                         except Exception as e:
-                            errors_log.append(f"GemVision[{m_name}]: {str(e)[:60]}")
+                            errors_log.append(f"GemVision[{m_name}]: {str(e)[:50]}")
                             continue
-                except Exception as e:
-                    errors_log.append(f"Gemini Client: {e}")
+                except Exception:
+                    pass
 
-        # 2. COBA GROQ VISION (Hanya pada model Vision yang aktif di akun Groq)
+        # 2. COBA GROQ VISION (Dengan max_tokens=750 agar lolos limit OTPM 1000)
         if groq_key_list:
             g_keys = list(groq_key_list)
             random.shuffle(g_keys)
 
             vision_content = [
-                {"type": "text", "text": f"{system_instruction}\n\nNama File Gambar: {img_names_str}\nPertanyaan Siswa:\n{user_question}"},
+                {"type": "text", "text": f"Nama Gambar: {img_names_str}\nInstruksi: {user_question}"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
 
@@ -251,7 +237,7 @@ def generate_multimodal_response(
                         for m in client.models.list().data:
                             m_id = m.id
                             if any(v in m_id.lower() for v in ["vision", "llama-4", "scout", "maverick", "pixtral", "llava"]):
-                                if "guard" not in m_id.lower():
+                                if not any(skip in m_id.lower() for skip in ["guard", "orpheus", "canopylabs", "whisper", "tts"]):
                                     vision_candidates.append(m_id)
                     except Exception:
                         pass
@@ -262,44 +248,46 @@ def generate_multimodal_response(
                                 model=v_model,
                                 messages=[{"role": "user", "content": vision_content}],
                                 temperature=0.3,
-                                max_tokens=1500
+                                max_tokens=750
                             )
                             reply_text = completion.choices[0].message.content
                             if reply_text:
                                 return reply_text, f"Groq Vision ({v_model})"
                         except Exception as e:
-                            errors_log.append(f"GroqVision[{v_model}]: {str(e)[:60]}")
+                            errors_log.append(f"GroqVision[{v_model}]: {str(e)[:50]}")
                             continue
                 except Exception:
                     pass
 
-        # 3. JEMBATAN OCR OTOMATIS KE GROQ LPU (JIKA MODEL VISION 404 / TIDAK TERSEDIA)
+        # 3. EKSTRAKSI TEKS GAMBAR (OCR) KE GROQ LPU
         ocr_extracted_text = extract_text_from_image_ocr(target_img_bytes)
         if ocr_extracted_text:
             chat_messages[-1]["text"] = (
                 f"[SISWA MENGUNGGAH GAMBAR BERNAMA: '{img_names_str}']\n"
-                f"[HASIL PEMINDAIAN SELURUH TEKS DI DALAM GAMBAR]:\n{ocr_extracted_text}\n\n"
+                f"[ISI TEKS DI DALAM GAMBAR]:\n{ocr_extracted_text[:3500]}\n\n"
                 f"[PERMINTAAN SISWA]: {user_question}\n\n"
-                f"Berikan analisis dan penjelasan yang lengkap, terstruktur, dan mudah dipahami berdasarkan isi gambar di atas!"
+                f"Jelaskan dan analisis isi gambar di atas secara terstruktur untuk siswa SMK TJKT!"
             )
         else:
             chat_messages[-1]["text"] = (
-                f"[SISWA MENGUNGGAH GAMBAR MATERI/PRAKTIKUM BERNAMA: '{img_names_str}']\n"
+                f"[SISWA MENGUNGGAH GAMBAR MATERI BERNAMA: '{img_names_str}']\n"
                 f"[PERMINTAAN SISWA]: {user_question}\n\n"
-                f"Berikan analisis dan penjelasan lengkap mengenai topik '{img_names_str}' sesuai permintaan siswa di atas secara langsung dan mendalam!"
+                f"Berikan analisis dan penjelasan lengkap mengenai topik '{img_names_str}' secara langsung dan terstruktur!"
             )
 
     # ---------------------------------------------------------
-    # B. PEMROSESAN UTAMA VIA GROQ LPU & GEMINI (TEKS & HASIL OCR GAMBAR)
+    # B. PEMROSESAN UTAMA VIA GROQ LPU (DENGAN BATAS TOKEN AMAN < 8000 TPM & < 1000 OTPM)
     # ---------------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
 
-        groq_payload = [{"role": "system", "content": system_instruction}]
-        for m in chat_messages:
+        # Pangkas instruksi sistem & pesan agar total token selalu di bawah 2.500 token (aman dari limit 8.000 TPM)
+        safe_sys_prompt = system_instruction[:3500]
+        groq_payload = [{"role": "system", "content": safe_sys_prompt}]
+        for m in chat_messages[-3:]:
             role = "user" if m["role"] == "user" else "assistant"
-            text_val = m.get("text", "").strip()
+            text_val = m.get("text", "").strip()[:3000]
             if text_val:
                 groq_payload.append({"role": role, "content": text_val})
 
@@ -310,12 +298,16 @@ def generate_multimodal_response(
                 try:
                     for m in client.models.list().data:
                         m_id = m.id
-                        if not any(skip in m_id.lower() for skip in ["whisper", "guard", "tts", "embed", "playai", "allam"]):
+                        # Blokir semua model suara/terms seperti orpheus, whisper, guard, playai
+                        if not any(skip in m_id.lower() for skip in [
+                            "whisper", "guard", "tts", "embed", "playai", "allam", "orpheus", "canopylabs", "distil"
+                        ]):
                             active_groq_models.append(m_id)
                 except Exception:
                     pass
 
-                preferred_keywords = ["llama-3.3", "llama-3.1", "llama-4", "qwen", "deepseek", "mixtral", "gemma"]
+                # Prioritaskan model Llama & Qwen yang memiliki kuota TPM besar dan tidak butuh Terms Acceptance
+                preferred_keywords = ["llama-3.3-70b", "llama-3.1-8b", "llama-3", "gemma2", "mixtral", "qwen", "gpt-oss"]
                 sorted_groq_models = []
                 for kw in preferred_keywords:
                     for m_id in active_groq_models:
@@ -330,30 +322,34 @@ def generate_multimodal_response(
 
                 for model_name in sorted_groq_models:
                     try:
+                        # Gunakan max_tokens=750 agar tidak terkena Error 429 (Limit OTPM 1000 pada Qwen/GPT-OSS)
                         completion = client.chat.completions.create(
                             model=model_name,
                             messages=groq_payload,
                             temperature=0.3,
-                            max_tokens=1500,
+                            max_tokens=750,
                         )
                         reply_text = completion.choices[0].message.content
                         if reply_text:
                             engine_label = f"Groq Vision-OCR ({model_name})" if image_bytes_list else f"Groq ({model_name})"
                             return reply_text, engine_label
                     except Exception as e:
-                        errors_log.append(f"Groq [{model_name}]: {e}")
+                        errors_log.append(f"Groq [{model_name}]: {str(e)[:80]}")
                         continue
             except Exception as e:
                 errors_log.append(f"Groq Client Error: {e}")
 
+    # ---------------------------------------------------------
+    # C. FALLBACK GOOGLE GEMINI TEKS
+    # ---------------------------------------------------------
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
 
-        history_text = f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n"
-        for m in chat_messages:
+        history_text = f"[INSTRUKSI SISTEM]:\n{system_instruction[:4000]}\n\n"
+        for m in chat_messages[-3:]:
             role_label = "SISWA" if m["role"] == "user" else "ASISTEN"
-            text_val = m.get("text", "").strip()
+            text_val = m.get("text", "").strip()[:3000]
             if text_val:
                 history_text += f"{role_label}: {text_val}\n\n"
 
@@ -370,7 +366,7 @@ def generate_multimodal_response(
                         if response and response.text:
                             return response.text, f"Google ({model_name})"
                     except Exception as e:
-                        errors_log.append(f"Gemini [{model_name}]: {e}")
+                        errors_log.append(f"Gemini [{model_name}]: {str(e)[:60]}")
                         continue
             except Exception as e:
                 errors_log.append(f"Gemini Client Error: {e}")
@@ -546,10 +542,10 @@ if user_text or attached_files:
                 for p in reader.pages:
                     pdf_extracted += (p.extract_text() or "") + "\n"
                 if pdf_extracted.strip():
-                    extracted_docs_text += f"\n\n=== ISI FILE PDF YANG DIUNGGAH SISWA ({fname}) ===\n{pdf_extracted[:10000]}\n=====================================\n"
+                    extracted_docs_text += f"\n\n=== ISI FILE PDF SISWA ({fname}) ===\n{pdf_extracted[:3000]}\n=====================================\n"
                     file_names_info.append(f"📄 `{fname}`")
                 else:
-                    file_names_info.append(f"📄 `{fname}` (PDF hasil scan/gambar)")
+                    file_names_info.append(f"📄 `{fname}` (PDF visual)")
             except Exception as e:
                 st.warning(f"Gagal membaca PDF {fname}: {e}")
         else:
@@ -557,7 +553,7 @@ if user_text or attached_files:
                 f.seek(0)
                 txt_extracted = f.read().decode("utf-8", errors="ignore")
                 if txt_extracted.strip():
-                    extracted_docs_text += f"\n\n=== ISI FILE KONFIGURASI/TEKS SISWA ({fname}) ===\n```\n{txt_extracted[:10000]}\n```\n=====================================\n"
+                    extracted_docs_text += f"\n\n=== ISI FILE KONFIGURASI SISWA ({fname}) ===\n```\n{txt_extracted[:3000]}\n```\n=====================================\n"
                     file_names_info.append(f"📝 `{fname}`")
             except Exception as e:
                 st.warning(f"Gagal membaca file {fname}: {e}")
@@ -592,9 +588,10 @@ if user_text or attached_files:
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if MODUL_TEXT.strip():
-                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:20000]}"
+                        # Batasi ukuran ringkasan modul menjadi 2.500 karakter agar selalu lolos batas 8.000 TPM Groq
+                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:2500]}"
 
-                    recent_messages = [dict(m) for m in st.session_state.messages[-4:]]
+                    recent_messages = [dict(m) for m in st.session_state.messages[-3:]]
                     reply, used_engine = generate_multimodal_response(
                         groq_keys,
                         gemini_keys,
