@@ -14,10 +14,13 @@ from PIL import Image
 # 1. DETEKSI OTOMATIS FILE LOGO DI GITHUB
 # ==========================================
 def find_logo():
-    for name in ["logo.png", "logo.jpg", "logo.jpeg"]:
+    for name in ["logo.png", "logo.jpg", "logo.jpeg", "LOGO.PNG", "LOGO.JPG"]:
         if os.path.exists(name):
             return name
-    images = sorted(glob.glob("*.jpeg") + glob.glob("*.jpg") + glob.glob("*.png"))
+    images = sorted(
+        glob.glob("*.jpeg") + glob.glob("*.jpg") + glob.glob("*.png") +
+        glob.glob("*.JPEG") + glob.glob("*.JPG") + glob.glob("*.PNG")
+    )
     return images[0] if images else None
 
 LOGO_PATH = find_logo()
@@ -26,7 +29,7 @@ LOGO_PATH = find_logo()
 # 2. KONFIGURASI HALAMAN & IDENTITAS KARYA
 # ==========================================
 st.set_page_config(
-    page_title="RA'BUNG-NET AI",
+    page_title="RA'BUNG-NET AI - SMKN 3 Tana Toraja",
     page_icon=LOGO_PATH if LOGO_PATH else "🌐",
     layout="wide"
 )
@@ -36,14 +39,30 @@ ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
-# 3. FUNGSI OTOMATIS BACA SEMUA MODUL PDF DI GITHUB
+# 3. FUNGSI OTOMATIS BACA SEMUA MODUL PDF DI GITHUB (ANTI-CACHE BUG)
 # ==========================================
+def scan_pdf_files_in_repo():
+    """Mencari semua file .pdf atau .PDF di folder utama maupun sub-folder GitHub."""
+    found_pdfs = []
+    for root, dirs, files in os.walk("."):
+        # Abaikan folder sistem tersembunyi seperti .git atau .venv
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ["venv", "__pycache__"]]
+        for f in files:
+            if f.lower().endswith(".pdf"):
+                full_path = os.path.join(root, f)
+                found_pdfs.append(full_path)
+    return tuple(sorted(found_pdfs))
+
 @st.cache_data(show_spinner=False)
-def load_builtin_modules():
+def load_builtin_modules(pdf_files_tuple):
+    """Membaca isi semua file PDF. Cache otomatis diperbarui jika daftar file berubah."""
     combined_text = ""
     loaded_files = []
-    pdf_files = sorted(glob.glob("*.pdf"))
-    for pdf_path in pdf_files:
+    for pdf_path in pdf_files_tuple:
+        if not os.path.exists(pdf_path):
+            continue
+        # Selalu tambahkan file PDF ke daftar sidebar agar pasti tampil
+        loaded_files.append(pdf_path)
         try:
             reader = PdfReader(pdf_path)
             file_text = ""
@@ -51,12 +70,14 @@ def load_builtin_modules():
                 file_text += (page.extract_text() or "") + "\n"
             if file_text.strip():
                 combined_text += f"\n--- ISI MODUL: {os.path.basename(pdf_path)} ---\n{file_text}\n"
-                loaded_files.append(pdf_path)
+            else:
+                combined_text += f"\n--- MODUL TERSEDIA: {os.path.basename(pdf_path)} (Berisi diagram/gambar visual) ---\n"
         except Exception:
             continue
     return combined_text, loaded_files
 
-MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules()
+CURRENT_PDF_FILES = scan_pdf_files_in_repo()
+MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules(CURRENT_PDF_FILES)
 
 # ==========================================
 # 4. SYSTEM PROMPT (OTAK ASISTEN RA'BUNG-NET AI)
@@ -113,9 +134,7 @@ def convert_uploaded_image_to_jpeg_bytes(uploaded_file):
 def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, system_instruction, image_bytes_list=None):
     errors_log = []
 
-    # ---------------------------------------------------------
     # A. JIKA ADA GAMBAR: SCAN SEMUA MODEL AKTIF DI GEMINI & GROQ
-    # ---------------------------------------------------------
     if image_bytes_list:
         last_msg = chat_messages[-1]
         user_question = last_msg.get("text", "").strip()
@@ -224,9 +243,7 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
             "Detail: " + (" | ".join(errors_log[:3]))
         )
 
-    # ---------------------------------------------------------
     # B. JIKA TEKS / FILE DOKUMEN (TANPA GAMBAR)
-    # ---------------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
@@ -336,15 +353,22 @@ with st.sidebar:
     st.subheader("📚 Modul & Jobsheet Praktikum")
     if DAFTAR_MODUL:
         st.success(f"Tersedia {len(DAFTAR_MODUL)} Modul Praktikum Sekolah:")
-        for file_path in DAFTAR_MODUL:
+        for idx, file_path in enumerate(DAFTAR_MODUL):
             nama_file = os.path.basename(file_path)
-            col_m1, col_m2 = st.columns([3, 1])
+            col_m1, col_m2 = st.columns([4, 1])
             with col_m1:
                 st.markdown(f"📄 `{nama_file}`")
             with col_m2:
                 try:
                     with open(file_path, "rb") as f:
-                        st.download_button("⬇️", f, file_name=nama_file, mime="application/pdf", key=f"dl_{nama_file}")
+                        st.download_button(
+                            "⬇️",
+                            f,
+                            file_name=nama_file,
+                            mime="application/pdf",
+                            key=f"dl_{idx}_{nama_file}",
+                            help=f"Unduh {nama_file}"
+                        )
                 except Exception:
                     pass
     else:
@@ -364,6 +388,7 @@ with st.sidebar:
         """)
 
     if st.button("🔄 Mulai Percakapan Baru", use_container_width=True):
+        st.cache_data.clear()
         st.session_state.messages = []
         st.rerun()
 
@@ -377,8 +402,8 @@ if LOGO_PATH:
     with col_h2:
         st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
         st.write(
-            "Selamat datang di RA'BUNG-NET AI.  "
-            
+            "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di sebelah kiri kotak chat bawah untuk mengirim **screenshot error** "
+            "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
         )
 else:
     st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
@@ -525,7 +550,7 @@ if user_text or attached_files:
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if MODUL_TEXT.strip():
-                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:15000]}"
+                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:20000]}"
 
                     recent_messages = st.session_state.messages[-4:]
                     reply, used_engine = generate_multimodal_response(
