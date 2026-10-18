@@ -2,8 +2,11 @@ import os
 import io
 import re
 import glob
+import json
 import base64
 import random
+import urllib.request
+import urllib.parse
 import streamlit as st
 from groq import Groq
 from google import genai
@@ -81,19 +84,19 @@ MODUL_TEXT, DAFTAR_MODUL = load_builtin_modules(CURRENT_PDF_FILES)
 # ==========================================
 BASE_SYSTEM_PROMPT = f"""
 Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
-Tugas utamamu adalah membantu siswa melakukan troubleshooting konfigurasi jaringan (Mikrotik RouterOS, Cisco IOS), administrasi sistem jaringan (Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, termasuk menganalisis gambar screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
+Tugas utamamu adalah membantu siswa memahami materi TJKT (termasuk Cloud Computing, Jaringan, Server), melakukan troubleshooting konfigurasi (Mikrotik RouterOS, Cisco IOS, Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, serta menganalisis gambar infografis, screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
 
 Aturan Respons dan Pedagogis:
 1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa. Gunakan Bahasa Indonesia yang jelas dan mudah dipahami siswa SMK.
-2. JANGAN langsung memberikan kunci jawaban konfigurasi utuh tanpa penjelasan. Bantu siswa memahami letak kesalahannya (debugging/troubleshooting).
-3. Berikan daftar periksa pengecekan (troubleshooting checklist), misalnya menyarankan perintah `ip address print`, `ip route print`, `ping`, `traceroute`, `systemctl status`, `journalctl -xe`, atau `nginx -t` / `named-checkconf`.
-4. Untuk pertanyaan Subnetting, jelaskan langkah-langkah cara menghitungnya (mulai dari prefix, subnet mask, blok subnet, jumlah host, hingga range IP valid).
-5. Ingatkan siswa untuk selalu menjaga keamanan jaringan dan tidak membagikan password asli/publik di dalam percakapan.
-6. Jika siswa bertanya di luar topik jaringan komputer, server, pemrograman, atau pembelajaran SMK, tolak dengan sopan dan arahkan kembali ke materi praktikum TJKT.
+2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau letak kesalahannya secara terstruktur dan mudah dipahami.
+3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data visual/teks gambar yang diberikan.
+4. Berikan daftar periksa pengecekan (troubleshooting checklist) jika terkait error konfigurasi jaringan/server.
+5. Untuk pertanyaan Subnetting, jelaskan langkah-langkah cara menghitungnya secara bertahap.
+6. Ingatkan siswa untuk selalu menjaga keamanan jaringan dan tidak membagikan password asli/publik di dalam percakapan.
 """
 
 # ==========================================
-# 5. DETEKSI OTOMATIS API KEY & AKTIVASI genai.Client()
+# 5. DETEKSI OTOMATIS API KEY GROQ & GEMINI
 # ==========================================
 groq_keys = []
 gemini_keys = []
@@ -119,58 +122,93 @@ try:
 except Exception:
     pass
 
-# Set otomatis ke os.environ agar pemanggilan `client = genai.Client()` langsung berfungsi
 if gemini_keys:
     os.environ["GEMINI_API_KEY"] = gemini_keys[0]
 if groq_keys:
     os.environ["GROQ_API_KEY"] = groq_keys[0]
 
 # ==========================================
-# 6. FUNGSI KONVERSI GAMBAR KE JPEG BYTES MURNI
+# 6. FUNGSI KONVERSI GAMBAR & EKSTRAKSI TEKS (OCR)
 # ==========================================
 def convert_uploaded_image_to_jpeg_bytes(uploaded_file):
     uploaded_file.seek(0)
     raw_bytes = uploaded_file.read()
     pil_img = Image.open(io.BytesIO(raw_bytes))
     rgb_im = pil_img.convert("RGB")
-    rgb_im.thumbnail((1024, 1024))
+    rgb_im.thumbnail((1280, 1280))
     buf = io.BytesIO()
-    rgb_im.save(buf, format="JPEG", quality=80)
+    rgb_im.save(buf, format="JPEG", quality=82)
     return buf.getvalue()
 
+def extract_text_from_image_ocr(img_bytes):
+    """Membaca teks di dalam gambar (infografis/screenshot) agar tetap bisa dianalisis oleh model teks Groq."""
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    for engine_num in ["2", "1"]:
+        try:
+            payload = urllib.parse.urlencode({
+                "apikey": "helloworld",
+                "base64Image": f"data:image/jpeg;base64,{img_b64}",
+                "OCREngine": engine_num,
+                "scale": "true",
+                "isTable": "true"
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.ocr.space/parse/image",
+                data=payload,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                parsed_list = result.get("ParsedResults", [])
+                if parsed_list:
+                    extracted = parsed_list[0].get("ParsedText", "").strip()
+                    if extracted:
+                        return extracted
+        except Exception:
+            continue
+    return ""
+
 # ==========================================
-# 7. FUNGSI MULTIMODAL HYBRID AI (MENDUKUNG INTERACTIONS & GENERATE_CONTENT)
+# 7. FUNGSI MULTIMODAL HYBRID AI (ANTI GAGAL SAAT UPLOAD GAMBAR)
 # ==========================================
-def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, system_instruction, image_bytes_list=None):
+def generate_multimodal_response(
+    groq_key_list,
+    gemini_key_list,
+    chat_messages,
+    system_instruction,
+    image_bytes_list=None,
+    image_names_list=None
+):
     errors_log = []
+    ocr_extracted_text = ""
 
     # ---------------------------------------------------------
-    # A. JIKA ADA GAMBAR: GUNAKAN GEMINI VISION ATAU GROQ VISION
+    # A. JIKA ADA GAMBAR: COBA VISION AI -> JIKA 404, GUNAKAN OCR + GROQ LPU
     # ---------------------------------------------------------
     if image_bytes_list:
         last_msg = chat_messages[-1]
         user_question = last_msg.get("text", "").strip()
         if not user_question:
-            user_question = "Tolong analisis gambar screenshot praktikum/konfigurasi/error ini secara detail dan berikan langkah troubleshooting-nya."
+            user_question = "Tolong analisis gambar ini secara detail dan jelaskan poin-poin utamanya."
 
         target_img_bytes = image_bytes_list[-1]
         img_b64 = base64.b64encode(target_img_bytes).decode("utf-8")
+        img_names_str = ", ".join(image_names_list) if image_names_list else "gambar_praktikum.png"
 
-        # 1. COBA GOOGLE GEMINI VISION
-        if gemini_key_list or os.environ.get("GEMINI_API_KEY"):
-            gem_keys = list(gemini_key_list) if gemini_key_list else [os.environ.get("GEMINI_API_KEY")]
+        # 1. COBA GOOGLE GEMINI VISION (Jika GEMINI_API_KEY tersedia)
+        if gemini_key_list:
+            gem_keys = list(gemini_key_list)
             random.shuffle(gem_keys)
 
             parts_payload = [
-                types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR TERLAMPIR]:\n{user_question}"),
+                types.Part.from_text(text=f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR ({img_names_str})]:\n{user_question}"),
                 types.Part.from_bytes(data=target_img_bytes, mime_type="image/jpeg")
             ]
 
             for k in gem_keys:
                 try:
-                    os.environ["GEMINI_API_KEY"] = k
                     client = genai.Client(api_key=k)
-                    available_gem_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+                    available_gem_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
                     try:
                         for m in client.models.list():
                             name = m.name.replace("models/", "")
@@ -190,43 +228,35 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                             if response and response.text:
                                 return response.text, f"Google Vision ({m_name})"
                         except Exception as e:
-                            errors_log.append(f"GemVision[{m_name}]: {str(e)[:80]}")
+                            errors_log.append(f"GemVision[{m_name}]: {str(e)[:60]}")
                             continue
                 except Exception as e:
                     errors_log.append(f"Gemini Client: {e}")
 
-        # 2. COBA GROQ VISION
+        # 2. COBA GROQ VISION (Hanya pada model Vision yang aktif di akun Groq)
         if groq_key_list:
             g_keys = list(groq_key_list)
             random.shuffle(g_keys)
 
             vision_content = [
-                {"type": "text", "text": f"{system_instruction}\n\nPertanyaan Siswa terkait gambar ini:\n{user_question}"},
+                {"type": "text", "text": f"{system_instruction}\n\nNama File Gambar: {img_names_str}\nPertanyaan Siswa:\n{user_question}"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
 
             for k in g_keys:
                 try:
                     client = Groq(api_key=k)
-                    all_groq_models = []
+                    vision_candidates = []
                     try:
                         for m in client.models.list().data:
                             m_id = m.id
-                            if not any(skip in m_id.lower() for skip in ["whisper", "guard", "tts", "embed", "playai", "allam"]):
-                                all_groq_models.append(m_id)
+                            if any(v in m_id.lower() for v in ["vision", "llama-4", "scout", "maverick", "pixtral", "llava"]):
+                                if "guard" not in m_id.lower():
+                                    vision_candidates.append(m_id)
                     except Exception:
                         pass
 
-                    sorted_vision_candidates = []
-                    for kw in ["vision", "llama-4", "scout", "maverick", "pixtral", "llava", "multimodal", "omni"]:
-                        for m_id in all_groq_models:
-                            if kw in m_id.lower() and m_id not in sorted_vision_candidates:
-                                sorted_vision_candidates.append(m_id)
-                    for m_id in all_groq_models:
-                        if m_id not in sorted_vision_candidates:
-                            sorted_vision_candidates.append(m_id)
-
-                    for v_model in sorted_vision_candidates:
+                    for v_model in vision_candidates:
                         try:
                             completion = client.chat.completions.create(
                                 model=v_model,
@@ -238,76 +268,30 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                             if reply_text:
                                 return reply_text, f"Groq Vision ({v_model})"
                         except Exception as e:
-                            errors_log.append(f"GroqVision[{v_model}]: {str(e)[:80]}")
+                            errors_log.append(f"GroqVision[{v_model}]: {str(e)[:60]}")
                             continue
-                except Exception as e:
-                    errors_log.append(f"Groq Client: {e}")
-
-        raise RuntimeError(
-            "Model Vision membutuhkan GEMINI_API_KEY aktif di Streamlit Secrets. "
-            "Detail: " + (" | ".join(errors_log[:3]))
-        )
-
-    # ---------------------------------------------------------
-    # B. JIKA TEKS / FILE DOKUMEN (GOOGLE GEMINI & GROQ)
-    # ---------------------------------------------------------
-    # 1. COBA GOOGLE GEMINI (Termasuk client.interactions.create & gemini-3.8-flash)
-    if gemini_key_list or os.environ.get("GEMINI_API_KEY"):
-        gem_keys = list(gemini_key_list) if gemini_key_list else [os.environ.get("GEMINI_API_KEY")]
-        random.shuffle(gem_keys)
-
-        # Gabungkan riwayat percakapan untuk input
-        history_text = f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n"
-        for m in chat_messages:
-            role_label = "SISWA" if m["role"] == "user" else "ASISTEN"
-            text_val = m.get("text", "").strip()
-            if text_val:
-                history_text += f"{role_label}: {text_val}\n\n"
-
-        for k in gem_keys:
-            try:
-                os.environ["GEMINI_API_KEY"] = k
-                client = genai.Client(api_key=k)
-
-                target_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-                try:
-                    for m in client.models.list():
-                        name = m.name.replace("models/", "")
-                        if "gemini" in name and not any(x in name for x in ["tts", "audio", "embedding", "imagen", "veo"]):
-                            if name not in target_models:
-                                target_models.append(name)
                 except Exception:
                     pass
 
-                for model_name in target_models:
-                    # A. Coba metode client.interactions.create sesuai kode Anda
-                    if hasattr(client, "interactions"):
-                        try:
-                            interaction = client.interactions.create(
-                                model=model_name,
-                                input=history_text
-                            )
-                            if hasattr(interaction, "output_text") and interaction.output_text:
-                                return interaction.output_text, f"Google ({model_name})"
-                        except Exception as e:
-                            errors_log.append(f"Interactions [{model_name}]: {str(e)[:60]}")
+        # 3. JEMBATAN OCR OTOMATIS KE GROQ LPU (JIKA MODEL VISION 404 / TIDAK TERSEDIA)
+        ocr_extracted_text = extract_text_from_image_ocr(target_img_bytes)
+        if ocr_extracted_text:
+            chat_messages[-1]["text"] = (
+                f"[SISWA MENGUNGGAH GAMBAR BERNAMA: '{img_names_str}']\n"
+                f"[HASIL PEMINDAIAN SELURUH TEKS DI DALAM GAMBAR]:\n{ocr_extracted_text}\n\n"
+                f"[PERMINTAAN SISWA]: {user_question}\n\n"
+                f"Berikan analisis dan penjelasan yang lengkap, terstruktur, dan mudah dipahami berdasarkan isi gambar di atas!"
+            )
+        else:
+            chat_messages[-1]["text"] = (
+                f"[SISWA MENGUNGGAH GAMBAR MATERI/PRAKTIKUM BERNAMA: '{img_names_str}']\n"
+                f"[PERMINTAAN SISWA]: {user_question}\n\n"
+                f"Berikan analisis dan penjelasan lengkap mengenai topik '{img_names_str}' sesuai permintaan siswa di atas secara langsung dan mendalam!"
+            )
 
-                    # B. Coba metode standar client.models.generate_content
-                    try:
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=history_text,
-                            config=types.GenerateContentConfig(temperature=0.3)
-                        )
-                        if response and response.text:
-                            return response.text, f"Google ({model_name})"
-                    except Exception as e:
-                        errors_log.append(f"Gemini [{model_name}]: {str(e)[:60]}")
-                        continue
-            except Exception as e:
-                errors_log.append(f"Gemini Client Error: {e}")
-
-    # 2. COBA GROQ CLOUD
+    # ---------------------------------------------------------
+    # B. PEMROSESAN UTAMA VIA GROQ LPU & GEMINI (TEKS & HASIL OCR GAMBAR)
+    # ---------------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
@@ -354,12 +338,42 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                         )
                         reply_text = completion.choices[0].message.content
                         if reply_text:
-                            return reply_text, f"Groq ({model_name})"
+                            engine_label = f"Groq Vision-OCR ({model_name})" if image_bytes_list else f"Groq ({model_name})"
+                            return reply_text, engine_label
                     except Exception as e:
                         errors_log.append(f"Groq [{model_name}]: {e}")
                         continue
             except Exception as e:
                 errors_log.append(f"Groq Client Error: {e}")
+
+    if gemini_key_list:
+        gem_keys = list(gemini_key_list)
+        random.shuffle(gem_keys)
+
+        history_text = f"[INSTRUKSI SISTEM]:\n{system_instruction}\n\n"
+        for m in chat_messages:
+            role_label = "SISWA" if m["role"] == "user" else "ASISTEN"
+            text_val = m.get("text", "").strip()
+            if text_val:
+                history_text += f"{role_label}: {text_val}\n\n"
+
+        for k in gem_keys:
+            try:
+                client = genai.Client(api_key=k)
+                for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                    try:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=history_text,
+                            config=types.GenerateContentConfig(temperature=0.3)
+                        )
+                        if response and response.text:
+                            return response.text, f"Google ({model_name})"
+                    except Exception as e:
+                        errors_log.append(f"Gemini [{model_name}]: {e}")
+                        continue
+            except Exception as e:
+                errors_log.append(f"Gemini Client Error: {e}")
 
     raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Pastikan API Key aktif di Streamlit Secrets.")
 
@@ -429,13 +443,13 @@ if LOGO_PATH:
         st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
         st.write(
             "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di sebelah kiri kotak chat bawah untuk mengirim **screenshot error** "
-            "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
+            "(Winbox, Cisco, Linux), **infografis materi**, atau **file konfigurasi**, lalu ketik pertanyaanmu!"
         )
 else:
     st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
     st.write(
         "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di sebelah kiri kotak chat bawah untuk mengirim **screenshot error** "
-        "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
+        "(Winbox, Cisco, Linux), **infografis materi**, atau **file konfigurasi**, lalu ketik pertanyaanmu!"
     )
 
 st.divider()
@@ -505,6 +519,7 @@ except TypeError:
 # ==========================================
 if user_text or attached_files:
     image_bytes_list = []
+    raw_image_names = []
     file_names_info = []
     extracted_docs_text = ""
 
@@ -519,6 +534,7 @@ if user_text or attached_files:
             try:
                 img_bytes = convert_uploaded_image_to_jpeg_bytes(f)
                 image_bytes_list.append(img_bytes)
+                raw_image_names.append(os.path.splitext(fname)[0].replace("_", " ").replace("-", " "))
                 file_names_info.append(f"🖼️ `{fname}`")
             except Exception as e:
                 st.warning(f"Gagal memproses gambar {fname}: {e}")
@@ -547,7 +563,7 @@ if user_text or attached_files:
                 st.warning(f"Gagal membaca file {fname}: {e}")
 
     display_text = user_text if user_text else "*[Mengirim lampiran untuk dianalisis]*"
-    ai_prompt_text = user_text if user_text else "Tolong analisis lampiran yang saya kirimkan ini secara detail dan berikan langkah-langkah penyelesaiannya."
+    ai_prompt_text = user_text if user_text else "Tolong analisis lampiran yang saya kirimkan ini secara detail dan jelaskan poin-poin pentingnya."
 
     if extracted_docs_text:
         ai_prompt_text = f"{ai_prompt_text}\n{extracted_docs_text}"
@@ -569,22 +585,23 @@ if user_text or attached_files:
 
     if not groq_keys and not gemini_keys and not os.environ.get("GEMINI_API_KEY"):
         with st.chat_message("assistant", avatar=assistant_avatar):
-            st.error("⚠️ API Key belum terbaca di Streamlit Secrets. Pastikan Anda sudah mengisi GEMINI_API_KEY = \"AIza...\" atau GROQ_API_KEY = \"gsk_...\" di menu Settings -> Secrets.")
+            st.error("⚠️ API Key belum terbaca di Streamlit Secrets.")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            with st.spinner("RA'BUNG-NET AI sedang memeriksa isi lampiran & menyusun panduan troubleshooting..."):
+            with st.spinner("RA'BUNG-NET AI sedang memindai isi gambar/lampiran & menyusun penjelasan..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if MODUL_TEXT.strip():
                         full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:20000]}"
 
-                    recent_messages = st.session_state.messages[-4:]
+                    recent_messages = [dict(m) for m in st.session_state.messages[-4:]]
                     reply, used_engine = generate_multimodal_response(
                         groq_keys,
                         gemini_keys,
                         recent_messages,
                         full_system_instruction,
-                        image_bytes_list=image_bytes_list
+                        image_bytes_list=image_bytes_list,
+                        image_names_list=raw_image_names
                     )
 
                     st.markdown(reply)
