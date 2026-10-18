@@ -125,7 +125,7 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
         target_img_bytes = image_bytes_list[-1]
         img_b64 = base64.b64encode(target_img_bytes).decode("utf-8")
 
-        # 1. COBA GOOGLE GEMINI VISION (Deteksi Otomatis Semua Model Gemini Aktif)
+        # 1. COBA GOOGLE GEMINI VISION
         if gemini_key_list:
             gem_keys = list(gemini_key_list)
             random.shuffle(gem_keys)
@@ -147,7 +147,6 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                     except Exception as e:
                         errors_log.append(f"Gemini List: {e}")
 
-                    # Urutkan model flash/pro di paling atas
                     sorted_gem = []
                     for kw in ["flash", "pro", "gemma"]:
                         for m_id in available_gem_models:
@@ -172,7 +171,7 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                 except Exception as e:
                     errors_log.append(f"Gemini Client: {e}")
 
-        # 2. COBA GROQ VISION (Scan Otomatis Hanya Model yang Benar-Benar Ada di Server Groq Saat Ini)
+        # 2. COBA GROQ VISION
         if groq_key_list:
             g_keys = list(groq_key_list)
             random.shuffle(g_keys)
@@ -194,7 +193,6 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                     except Exception as e:
                         errors_log.append(f"Groq List: {e}")
 
-                    # Prioritaskan model yang namanya mengandung indikasi multimodal/vision, lalu coba seluruh model aktif lainnya
                     sorted_vision_candidates = []
                     for kw in ["vision", "llama-4", "scout", "maverick", "pixtral", "llava", "multimodal", "omni"]:
                         for m_id in all_groq_models:
@@ -221,11 +219,9 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
                 except Exception as e:
                     errors_log.append(f"Groq Client: {e}")
 
-        # Jika semua model menolak gambar (misalnya akun hanya punya GROQ_API_KEY dan Groq sedang menonaktifkan semua model Vision gratis)
         raise RuntimeError(
-            "Saat ini server Groq menonaktifkan model Vision (pembaca gambar) pada API Key Anda, atau kuota GEMINI_API_KEY belum aktif. "
-            "Solusi: Pastikan GEMINI_API_KEY (dimulai dengan 'AIza...') sudah dimasukkan di Streamlit Secrets untuk mengaktifkan Google Gemini Vision, "
-            "atau unggah file dalam bentuk PDF / Teks (.txt/.rsc). Detail: " + (" | ".join(errors_log[:3]))
+            "Saat ini model Vision (pembaca gambar) membutuhkan GEMINI_API_KEY aktif. "
+            "Detail: " + (" | ".join(errors_log[:3]))
         )
 
     # ---------------------------------------------------------
@@ -327,8 +323,6 @@ def generate_multimodal_response(groq_key_list, gemini_key_list, chat_messages, 
 # ==========================================
 # 8. SIDEBAR: LOGO, MODUL & INFO KARYA
 # ==========================================
-extra_modul_text = ""
-
 with st.sidebar:
     if LOGO_PATH:
         col_s1, col_s2, col_s3 = st.columns([1, 2, 1])
@@ -355,28 +349,6 @@ with st.sidebar:
                     pass
     else:
         st.info("Menggunakan Kurikulum Standar TJKT.")
-
-    with st.expander("📤 Upload Modul Guru (PDF)", expanded=False):
-        uploaded_pdfs = st.file_uploader("Tambah Modul Referensi:", type=["pdf"], accept_multiple_files=True)
-        if uploaded_pdfs:
-            for up_file in uploaded_pdfs:
-                try:
-                    up_file.seek(0)
-                    reader = PdfReader(up_file)
-                    file_text = ""
-                    for page in reader.pages:
-                        file_text += (page.extract_text() or "") + "\n"
-                    if file_text.strip():
-                        extra_modul_text += f"\n--- ISI MODUL: {up_file.name} ---\n{file_text}\n"
-                        st.success(f"✅ Aktif: {up_file.name}")
-                except Exception as e:
-                    st.error(f"Gagal: {e}")
-
-    active_engines = []
-    if groq_keys: active_engines.append(f"Groq ({len(groq_keys)} Key)")
-    if gemini_keys: active_engines.append(f"Gemini Vision ({len(gemini_keys)} Key)")
-    if active_engines:
-        st.caption(f"🟢 Mesin AI Aktif: **{' + '.join(active_engines)}**")
 
     st.divider()
 
@@ -552,9 +524,8 @@ if user_text or attached_files:
             with st.spinner("RA'BUNG-NET AI sedang memeriksa isi lampiran & menyusun panduan troubleshooting..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
-                    gabungan_modul = (MODUL_TEXT + "\n" + extra_modul_text).strip()
-                    if gabungan_modul:
-                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{gabungan_modul[:15000]}"
+                    if MODUL_TEXT.strip():
+                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:15000]}"
 
                     recent_messages = st.session_state.messages[-4:]
                     reply, used_engine = generate_multimodal_response(
