@@ -26,7 +26,7 @@ LOGO_PATH = find_logo()
 # 2. KONFIGURASI HALAMAN & IDENTITAS KARYA
 # ==========================================
 st.set_page_config(
-    page_title="RA'BUNG-NET AI - SMKN 3 Tana Toraja",
+    page_title="RA'BUNG-NET AI",
     page_icon=LOGO_PATH if LOGO_PATH else "🌐",
     layout="wide"
 )
