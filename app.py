@@ -377,8 +377,8 @@ if LOGO_PATH:
     with col_h2:
         st.header("RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
         st.write(
-            "Klik ikon **Lampirkan File/Foto (`+` / 📎)** di sebelah kiri kotak chat bawah untuk mengirim **screenshot error** "
-            "(Winbox, Cisco, Linux) atau **file konfigurasi**, lalu ketik pertanyaanmu!"
+            "Selamat datang di RA'BUNG-NET AI.  "
+            
         )
 else:
     st.header("🤖 RA'BUNG-NET AI: Asisten Praktikum Jaringan & Server Linux")
