@@ -43,14 +43,14 @@ ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
-# 3. FUNGSI OTOMATIS BACA SEMUA MODUL PDF DI GITHUB
+# 3. FUNGSI OTOMATIS BACA SEMUA MODUL PDF & MARKDOWN (.MD) DI GITHUB
 # ==========================================
 def scan_pdf_files_in_repo():
     found_pdfs = []
     for root, dirs, files in os.walk("."):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ["venv", "__pycache__"]]
         for f in files:
-            if f.lower().endswith(".pdf"):
+            if f.lower().endswith((".pdf", ".md")):
                 full_path = os.path.join(root, f)
                 found_pdfs.append(full_path)
     return tuple(sorted(found_pdfs))
@@ -64,12 +64,17 @@ def load_builtin_modules(pdf_files_tuple):
             continue
         loaded_files.append(pdf_path)
         try:
-            reader = PdfReader(pdf_path)
-            file_text = ""
-            for page in reader.pages:
-                file_text += (page.extract_text() or "") + "\n"
+            if pdf_path.lower().endswith(".md"):
+                with open(pdf_path, "r", encoding="utf-8", errors="ignore") as f_md:
+                    file_text = f_md.read()
+            else:
+                reader = PdfReader(pdf_path)
+                file_text = ""
+                for page in reader.pages:
+                    file_text += (page.extract_text() or "") + "\n"
+
             if file_text.strip():
-                combined_text += f"\n--- ISI MODUL: {os.path.basename(pdf_path)} ---\n{file_text}\n"
+                combined_text += f"\n--- ISI MODUL: {os.path.basename(pdf_path)} ---\n{file_text[:2500]}\n"
             else:
                 combined_text += f"\n--- MODUL TERSEDIA: {os.path.basename(pdf_path)} ---\n"
         except Exception:
@@ -90,7 +95,8 @@ Aturan Respons:
 1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa SMK.
 2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau langkah perbaikannya secara terstruktur dan jelas.
 3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
-4. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap dan ringkas.
+4. Utamakan menjawab sesuai isi MODUL PRAKTIKUM SEKOLAH yang dilampirkan pada instruksi ini.
+5. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap dan ringkas.
 """
 
 # ==========================================
@@ -178,9 +184,7 @@ def generate_multimodal_response(
 ):
     errors_log = []
 
-    # ---------------------------------------------------------
     # A. JIKA ADA GAMBAR: COBA VISION AI -> JIKA GAGAL, GUNAKAN OCR + GROQ
-    # ---------------------------------------------------------
     if image_bytes_list:
         last_msg = chat_messages[-1]
         user_question = last_msg.get("text", "").strip()
@@ -219,7 +223,7 @@ def generate_multimodal_response(
                 except Exception:
                     pass
 
-        # 2. COBA GROQ VISION (Dengan max_tokens=750 agar lolos limit OTPM 1000)
+        # 2. COBA GROQ VISION
         if groq_key_list:
             g_keys = list(groq_key_list)
             random.shuffle(g_keys)
@@ -275,15 +279,12 @@ def generate_multimodal_response(
                 f"Berikan analisis dan penjelasan lengkap mengenai topik '{img_names_str}' secara langsung dan terstruktur!"
             )
 
-    # ---------------------------------------------------------
-    # B. PEMROSESAN UTAMA VIA GROQ LPU (DENGAN BATAS TOKEN AMAN < 8000 TPM & < 1000 OTPM)
-    # ---------------------------------------------------------
+    # B. PEMROSESAN UTAMA VIA GROQ LPU
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
 
-        # Pangkas instruksi sistem & pesan agar total token selalu di bawah 2.500 token (aman dari limit 8.000 TPM)
-        safe_sys_prompt = system_instruction[:3500]
+        safe_sys_prompt = system_instruction[:4500]
         groq_payload = [{"role": "system", "content": safe_sys_prompt}]
         for m in chat_messages[-3:]:
             role = "user" if m["role"] == "user" else "assistant"
@@ -298,7 +299,6 @@ def generate_multimodal_response(
                 try:
                     for m in client.models.list().data:
                         m_id = m.id
-                        # Blokir semua model suara/terms seperti orpheus, whisper, guard, playai
                         if not any(skip in m_id.lower() for skip in [
                             "whisper", "guard", "tts", "embed", "playai", "allam", "orpheus", "canopylabs", "distil"
                         ]):
@@ -306,7 +306,6 @@ def generate_multimodal_response(
                 except Exception:
                     pass
 
-                # Prioritaskan model Llama & Qwen yang memiliki kuota TPM besar dan tidak butuh Terms Acceptance
                 preferred_keywords = ["llama-3.3-70b", "llama-3.1-8b", "llama-3", "gemma2", "mixtral", "qwen", "gpt-oss"]
                 sorted_groq_models = []
                 for kw in preferred_keywords:
@@ -322,7 +321,6 @@ def generate_multimodal_response(
 
                 for model_name in sorted_groq_models:
                     try:
-                        # Gunakan max_tokens=750 agar tidak terkena Error 429 (Limit OTPM 1000 pada Qwen/GPT-OSS)
                         completion = client.chat.completions.create(
                             model=model_name,
                             messages=groq_payload,
@@ -339,14 +337,12 @@ def generate_multimodal_response(
             except Exception as e:
                 errors_log.append(f"Groq Client Error: {e}")
 
-    # ---------------------------------------------------------
     # C. FALLBACK GOOGLE GEMINI TEKS
-    # ---------------------------------------------------------
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
 
-        history_text = f"[INSTRUKSI SISTEM]:\n{system_instruction[:4000]}\n\n"
+        history_text = f"[INSTRUKSI SISTEM]:\n{system_instruction[:4500]}\n\n"
         for m in chat_messages[-3:]:
             role_label = "SISWA" if m["role"] == "user" else "ASISTEN"
             text_val = m.get("text", "").strip()[:3000]
@@ -391,9 +387,13 @@ with st.sidebar:
         st.success(f"Tersedia {len(DAFTAR_MODUL)} Modul Praktikum Sekolah:")
         for idx, file_path in enumerate(DAFTAR_MODUL):
             nama_file = os.path.basename(file_path)
+            is_md = nama_file.lower().endswith(".md")
+            icon_doc = "📝" if is_md else "📄"
+            mime_doc = "text/markdown" if is_md else "application/pdf"
+
             col_m1, col_m2 = st.columns([4, 1])
             with col_m1:
-                st.markdown(f"📄 `{nama_file}`")
+                st.markdown(f"{icon_doc} `{nama_file}`")
             with col_m2:
                 try:
                     with open(file_path, "rb") as f:
@@ -401,7 +401,7 @@ with st.sidebar:
                             "⬇️",
                             f,
                             file_name=nama_file,
-                            mime="application/pdf",
+                            mime=mime_doc,
                             key=f"dl_{idx}_{nama_file}",
                             help=f"Unduh {nama_file}"
                         )
@@ -492,7 +492,7 @@ try:
     chat_val = st.chat_input(
         "Tanyakan kendala praktikum atau lampirkan foto/file lewat ikon (+) di kiri...",
         accept_file="multiple",
-        file_type=["png", "jpg", "jpeg", "webp", "pdf", "txt", "conf", "rsc", "log"]
+        file_type=["png", "jpg", "jpeg", "webp", "pdf", "md", "txt", "conf", "rsc", "log"]
     )
     if chat_val:
         user_text = chat_val.text
@@ -501,7 +501,7 @@ except TypeError:
     with st.popover("➕ Add photos & files (Upload dari Komputer/HP)"):
         fallback_files = st.file_uploader(
             "Pilih gambar screenshot error atau file praktikum:",
-            type=["png", "jpg", "jpeg", "webp", "pdf", "txt", "conf", "rsc", "log"],
+            type=["png", "jpg", "jpeg", "webp", "pdf", "md", "txt", "conf", "rsc", "log"],
             accept_multiple_files=True,
             key="fallback_uploader"
         )
@@ -553,7 +553,7 @@ if user_text or attached_files:
                 f.seek(0)
                 txt_extracted = f.read().decode("utf-8", errors="ignore")
                 if txt_extracted.strip():
-                    extracted_docs_text += f"\n\n=== ISI FILE KONFIGURASI SISWA ({fname}) ===\n```\n{txt_extracted[:3000]}\n```\n=====================================\n"
+                    extracted_docs_text += f"\n\n=== ISI FILE MARKDOWN/KONFIGURASI SISWA ({fname}) ===\n```\n{txt_extracted[:3000]}\n```\n=====================================\n"
                     file_names_info.append(f"📝 `{fname}`")
             except Exception as e:
                 st.warning(f"Gagal membaca file {fname}: {e}")
@@ -588,8 +588,7 @@ if user_text or attached_files:
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     if MODUL_TEXT.strip():
-                        # Batasi ukuran ringkasan modul menjadi 2.500 karakter agar selalu lolos batas 8.000 TPM Groq
-                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:2500]}"
+                        full_system_instruction += f"\n\nBERIKUT RINGKASAN MODUL PRAKTIKUM SEKOLAH:\n{MODUL_TEXT[:3800]}"
 
                     recent_messages = [dict(m) for m in st.session_state.messages[-3:]]
                     reply, used_engine = generate_multimodal_response(
