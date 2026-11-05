@@ -96,7 +96,7 @@ Aturan Respons:
 2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau langkah perbaikannya secara terstruktur dan jelas.
 3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
 4. Utamakan menjawab sesuai isi MODUL PRAKTIKUM SEKOLAH yang dilampirkan pada instruksi ini.
-5. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap dan ringkas.
+5. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap dan detail.
 """
 
 # ==========================================
