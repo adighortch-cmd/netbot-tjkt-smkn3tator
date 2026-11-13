@@ -38,9 +38,9 @@ st.set_page_config(
     layout="wide"
 )
 
-NAMA_GURU = "Adi Ghoro"
+NAMA_GURU = "Adinegoro Mangentang"
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
-KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
+KATEGORI_KARYA = "AI Agent dan Chatbot"
 
 # ==========================================
 # 3. SYSTEM PROMPT (OTAK ASISTEN RA'BUNG-NET AI)
@@ -53,7 +53,7 @@ Aturan Respons:
 1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa SMK.
 2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau langkah perbaikannya secara terstruktur dan jelas.
 3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
-4. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap dan ringkas.
+4. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap lengkap dan jelas.
 """
 
 # ==========================================
