@@ -38,20 +38,20 @@ st.set_page_config(
     layout="wide"
 )
 
-NAMA_GURU = "Adinegoro Mangentang"
+NAMA_GURU = "Adi Ghoro"
 ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
-KATEGORI_KARYA = "AI Agent dan Chatbot"
+KATEGORI_KARYA = "AI Agent dan Chatbot / Koding dan Kecerdasan Artifisial"
 
 # ==========================================
-# 3. SYSTEM PROMPT (ATURAN KETAT JAWABAN TUNTAS TANPA TERPOTONG)
+# 3. SYSTEM PROMPT (ATURAN KETAT JAWABAN TUNTAS & PADAT)
 # ==========================================
 BASE_SYSTEM_PROMPT = f"""
 Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
 Tugas utamamu adalah membantu siswa memahami materi TJKT (Cloud Computing, Jaringan, Server), melakukan troubleshooting konfigurasi (Mikrotik RouterOS, Cisco IOS, Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, serta menganalisis gambar infografis, screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
 
 ATURAN WAJIB RESPONS (AGAR TUNTAS & TIDAK TERPOTONG):
-1. SELESAIKAN SEMUA PENJELASAN DALAM SATU KALI JAWABAN. Dilarang keras memotong penjelasan di tengah jalan, menggantung pembahasan, atau menyuruh siswa mengetik "lanjut" / "lagi".
-2. Susun jawaban secara padat, terstruktur menggunakan poin-poin atau langkah bernomor, langsung ke inti permasalahan tanpa basa-basi panjang di awal maupun akhir agar seluruh materi muat utuh.
+1. SELESAIKAN SEMUA PENJELASAN DALAM SATU KALI JAWABAN. Dilarang keras memotong penjelasan di tengah jalan, menggantung nomor daftar, atau menyuruh siswa mengetik "lanjut" / "lagi".
+2. Langsung masuk ke inti penjelasan menggunakan poin bernomor yang padat, jelas, dan praktis tanpa kalimat pembuka/penutup yang bertele-tele.
 3. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa SMK.
 4. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan seluruh isi materi atau langkah perbaikannya secara lengkap sampai kesimpulan akhir.
 5. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
@@ -131,7 +131,7 @@ def extract_text_from_image_ocr(img_bytes):
     return ""
 
 # ==========================================
-# 6. FUNGSI MULTIMODAL HYBRID AI (AUTO-CONTINUE & JAWABAN TUNTAS)
+# 6. FUNGSI MULTIMODAL HYBRID AI (ANTI TERPOTONG & BEBAS QWEN OTPM LIMIT)
 # ==========================================
 def generate_multimodal_response(
     groq_key_list,
@@ -214,13 +214,11 @@ def generate_multimodal_response(
 
                     for v_model in vision_candidates:
                         try:
-                            is_strict = any(x in v_model.lower() for x in ["qwen", "gpt-oss"])
-                            v_max_tokens = 850 if is_strict else 2500
                             completion = client.chat.completions.create(
                                 model=v_model,
                                 messages=[{"role": "user", "content": vision_content}],
                                 temperature=0.3,
-                                max_tokens=v_max_tokens
+                                max_tokens=2500
                             )
                             reply_text = completion.choices[0].message.content
                             if reply_text:
@@ -248,7 +246,7 @@ def generate_multimodal_response(
             )
 
     # ---------------------------------------------------------
-    # B. PEMROSESAN UTAMA VIA GROQ LPU (DENGAN AUTO-CONTINUE)
+    # B. PEMROSESAN UTAMA VIA GROQ LPU (HANYA MODEL KUOTA BESAR & NON-THINKING)
     # ---------------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
@@ -269,15 +267,16 @@ def generate_multimodal_response(
                 try:
                     for m in client.models.list().data:
                         m_id = m.id
+                        # Blokir model audio, guard, dan model reasoning ber-OTPM 1000 (qwen, gpt-oss, deepseek-r1)
                         if not any(skip in m_id.lower() for skip in [
-                            "whisper", "guard", "tts", "embed", "playai", "allam", "orpheus", "canopylabs", "distil"
+                            "whisper", "guard", "tts", "embed", "playai", "allam",
+                            "orpheus", "canopylabs", "distil", "qwen", "gpt-oss", "deepseek-r1"
                         ]):
                             active_groq_models.append(m_id)
                 except Exception:
                     pass
 
-                # Prioritaskan Llama 3.3 70B & Llama 3.1 8B karena mendukung output panjang hingga 2500+ token tanpa OTPM limit 1000
-                preferred_keywords = ["llama-3.3-70b", "llama-3.1-8b", "llama-3", "gemma2", "mixtral", "qwen", "gpt-oss"]
+                preferred_keywords = ["llama-3.3-70b", "llama-3.1-8b", "llama-3", "gemma2", "mixtral"]
                 sorted_groq_models = []
                 for kw in preferred_keywords:
                     for m_id in active_groq_models:
@@ -290,36 +289,37 @@ def generate_multimodal_response(
                 if not sorted_groq_models:
                     sorted_groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
-                for model_name in sorted_groq_models:
+                for idx_m, model_name in enumerate(sorted_groq_models):
                     try:
-                        # Gunakan 2500 token untuk Llama/Mixtral agar tuntas, dan 850 token khusus untuk Qwen/GPT-OSS
-                        is_strict_otpm = any(x in model_name.lower() for x in ["qwen", "gpt-oss"])
-                        dynamic_max_tokens = 850 if is_strict_otpm else 2500
-
                         completion = client.chat.completions.create(
                             model=model_name,
                             messages=groq_payload,
                             temperature=0.3,
-                            max_tokens=dynamic_max_tokens,
+                            max_tokens=3000,
                         )
                         choice = completion.choices[0]
                         reply_text = choice.message.content or ""
 
-                        # AUTO-CONTINUE: Jika terpotong karena batas token (finish_reason == "length"), sambung otomatis!
+                        # AUTO-CONTINUE LINTAS MODEL: Jika masih terpotong, sambung dengan model cadangan agar tidak kena limit OTPM
                         if getattr(choice, "finish_reason", "") == "length" and reply_text:
+                            fallback_cont_model = (
+                                sorted_groq_models[idx_m + 1]
+                                if idx_m + 1 < len(sorted_groq_models)
+                                else "llama-3.1-8b-instant"
+                            )
                             try:
                                 cont_payload = groq_payload + [
                                     {"role": "assistant", "content": reply_text},
                                     {
                                         "role": "user",
-                                        "content": "Lanjutkan langsung kalimat/langkah terakhir yang terpotong di atas sampai selesai tuntas tanpa mengulang penjelasan awal."
+                                        "content": "Lanjutkan langsung kalimat/poin terakhir yang terpotong di atas sampai selesai tuntas tanpa mengulang awal."
                                     }
                                 ]
                                 cont_comp = client.chat.completions.create(
-                                    model=model_name,
+                                    model=fallback_cont_model,
                                     messages=cont_payload,
                                     temperature=0.3,
-                                    max_tokens=dynamic_max_tokens,
+                                    max_tokens=2000,
                                 )
                                 cont_text = cont_comp.choices[0].message.content or ""
                                 if cont_text:
