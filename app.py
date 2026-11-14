@@ -43,17 +43,19 @@ ASAL_SEKOLAH = "SMK Negeri 3 Tana Toraja - Sulawesi Selatan"
 KATEGORI_KARYA = "AI Agent dan Chatbot"
 
 # ==========================================
-# 3. SYSTEM PROMPT (OTAK ASISTEN RA'BUNG-NET AI)
+# 3. SYSTEM PROMPT (ATURAN KETAT JAWABAN TUNTAS TANPA TERPOTONG)
 # ==========================================
 BASE_SYSTEM_PROMPT = f"""
 Kamu adalah 'RA'BUNG-NET AI', asisten virtual praktikum untuk siswa jurusan Teknik Jaringan Komputer dan Telekomunikasi (TJKT) di {ASAL_SEKOLAH}.
-Tugas utamamu adalah membantu siswa memahami materi TJKT (termasuk Cloud Computing, Jaringan, Server), melakukan troubleshooting konfigurasi (Mikrotik RouterOS, Cisco IOS, Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, serta menganalisis gambar infografis, screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
+Tugas utamamu adalah membantu siswa memahami materi TJKT (Cloud Computing, Jaringan, Server), melakukan troubleshooting konfigurasi (Mikrotik RouterOS, Cisco IOS, Linux Debian/Ubuntu), dan perhitungan Subnetting IPv4/IPv6, serta menganalisis gambar infografis, screenshot error, topologi, atau file konfigurasi yang dikirimkan siswa.
 
-Aturan Respons:
-1. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa SMK.
-2. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan isi materi atau langkah perbaikannya secara terstruktur dan jelas.
-3. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
-4. Untuk pertanyaan Subnetting atau konfigurasi, jelaskan langkah-langkahnya secara bertahap lengkap dan jelas.
+ATURAN WAJIB RESPONS (AGAR TUNTAS & TIDAK TERPOTONG):
+1. SELESAIKAN SEMUA PENJELASAN DALAM SATU KALI JAWABAN. Dilarang keras memotong penjelasan di tengah jalan, menggantung pembahasan, atau menyuruh siswa mengetik "lanjut" / "lagi".
+2. Susun jawaban secara padat, terstruktur menggunakan poin-poin atau langkah bernomor, langsung ke inti permasalahan tanpa basa-basi panjang di awal maupun akhir agar seluruh materi muat utuh.
+3. Berperanlah sebagai guru pembimbing lab yang ramah, sabar, dan memotivasi siswa SMK.
+4. Jika siswa mengunggah gambar infografis/materi atau screenshot error, jelaskan seluruh isi materi atau langkah perbaikannya secara lengkap sampai kesimpulan akhir.
+5. JANGAN pernah mengatakan kamu tidak bisa melihat gambar atau belum menerima gambar. Analisis langsung berdasarkan data/teks gambar yang diberikan.
+6. Untuk pertanyaan Subnetting atau konfigurasi, tuliskan seluruh langkah perhitungan atau langkah pengecekan dari awal sampai hasil akhir dalam satu respons penuh.
 """
 
 # ==========================================
@@ -129,7 +131,7 @@ def extract_text_from_image_ocr(img_bytes):
     return ""
 
 # ==========================================
-# 6. FUNGSI MULTIMODAL HYBRID AI
+# 6. FUNGSI MULTIMODAL HYBRID AI (AUTO-CONTINUE & JAWABAN TUNTAS)
 # ==========================================
 def generate_multimodal_response(
     groq_key_list,
@@ -141,22 +143,28 @@ def generate_multimodal_response(
 ):
     errors_log = []
 
+    # ---------------------------------------------------------
+    # A. JIKA ADA GAMBAR: COBA VISION AI -> JIKA GAGAL, OCR + GROQ
+    # ---------------------------------------------------------
     if image_bytes_list:
         last_msg = chat_messages[-1]
         user_question = last_msg.get("text", "").strip()
         if not user_question:
-            user_question = "Tolong analisis gambar ini secara detail dan jelaskan poin-poin utamanya."
+            user_question = "Tolong analisis gambar ini secara detail dan tuntas dari awal hingga akhir."
 
         target_img_bytes = image_bytes_list[-1]
         img_b64 = base64.b64encode(target_img_bytes).decode("utf-8")
         img_names_str = ", ".join(image_names_list) if image_names_list else "gambar_praktikum.png"
 
+        # 1. COBA GOOGLE GEMINI VISION
         if gemini_key_list:
             gem_keys = list(gemini_key_list)
             random.shuffle(gem_keys)
 
             parts_payload = [
-                types.Part.from_text(text=f"[INSTRUKSI]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR ({img_names_str})]:\n{user_question}"),
+                types.Part.from_text(
+                    text=f"[INSTRUKSI]:\n{system_instruction}\n\n[PERTANYAAN SISWA TERKAIT GAMBAR ({img_names_str})]:\n{user_question}"
+                ),
                 types.Part.from_bytes(data=target_img_bytes, mime_type="image/jpeg")
             ]
 
@@ -168,7 +176,10 @@ def generate_multimodal_response(
                             response = client.models.generate_content(
                                 model=m_name,
                                 contents=[types.Content(role="user", parts=parts_payload)],
-                                config=types.GenerateContentConfig(temperature=0.3)
+                                config=types.GenerateContentConfig(
+                                    temperature=0.3,
+                                    max_output_tokens=4096
+                                )
                             )
                             if response and response.text:
                                 return response.text, f"Google Vision ({m_name})"
@@ -178,12 +189,13 @@ def generate_multimodal_response(
                 except Exception:
                     pass
 
+        # 2. COBA GROQ VISION
         if groq_key_list:
             g_keys = list(groq_key_list)
             random.shuffle(g_keys)
 
             vision_content = [
-                {"type": "text", "text": f"Nama Gambar: {img_names_str}\nInstruksi: {user_question}"},
+                {"type": "text", "text": f"{system_instruction}\n\nNama Gambar: {img_names_str}\nInstruksi: {user_question}"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
 
@@ -202,11 +214,13 @@ def generate_multimodal_response(
 
                     for v_model in vision_candidates:
                         try:
+                            is_strict = any(x in v_model.lower() for x in ["qwen", "gpt-oss"])
+                            v_max_tokens = 850 if is_strict else 2500
                             completion = client.chat.completions.create(
                                 model=v_model,
                                 messages=[{"role": "user", "content": vision_content}],
                                 temperature=0.3,
-                                max_tokens=750
+                                max_tokens=v_max_tokens
                             )
                             reply_text = completion.choices[0].message.content
                             if reply_text:
@@ -217,21 +231,25 @@ def generate_multimodal_response(
                 except Exception:
                     pass
 
+        # 3. EKSTRAKSI TEKS GAMBAR (OCR) KE GROQ LPU
         ocr_extracted_text = extract_text_from_image_ocr(target_img_bytes)
         if ocr_extracted_text:
             chat_messages[-1]["text"] = (
                 f"[SISWA MENGUNGGAH GAMBAR BERNAMA: '{img_names_str}']\n"
                 f"[ISI TEKS DI DALAM GAMBAR]:\n{ocr_extracted_text[:3500]}\n\n"
                 f"[PERMINTAAN SISWA]: {user_question}\n\n"
-                f"Jelaskan dan analisis isi gambar di atas secara terstruktur untuk siswa SMK TJKT!"
+                f"Jelaskan dan analisis seluruh isi gambar di atas secara tuntas dan terstruktur sampai kesimpulan akhir!"
             )
         else:
             chat_messages[-1]["text"] = (
                 f"[SISWA MENGUNGGAH GAMBAR MATERI BERNAMA: '{img_names_str}']\n"
                 f"[PERMINTAAN SISWA]: {user_question}\n\n"
-                f"Berikan analisis dan penjelasan lengkap mengenai topik '{img_names_str}' secara langsung dan terstruktur!"
+                f"Berikan analisis dan penjelasan lengkap mengenai topik '{img_names_str}' secara tuntas sampai selesai!"
             )
 
+    # ---------------------------------------------------------
+    # B. PEMROSESAN UTAMA VIA GROQ LPU (DENGAN AUTO-CONTINUE)
+    # ---------------------------------------------------------
     if groq_key_list:
         g_keys = list(groq_key_list)
         random.shuffle(g_keys)
@@ -258,6 +276,7 @@ def generate_multimodal_response(
                 except Exception:
                     pass
 
+                # Prioritaskan Llama 3.3 70B & Llama 3.1 8B karena mendukung output panjang hingga 2500+ token tanpa OTPM limit 1000
                 preferred_keywords = ["llama-3.3-70b", "llama-3.1-8b", "llama-3", "gemma2", "mixtral", "qwen", "gpt-oss"]
                 sorted_groq_models = []
                 for kw in preferred_keywords:
@@ -273,13 +292,41 @@ def generate_multimodal_response(
 
                 for model_name in sorted_groq_models:
                     try:
+                        # Gunakan 2500 token untuk Llama/Mixtral agar tuntas, dan 850 token khusus untuk Qwen/GPT-OSS
+                        is_strict_otpm = any(x in model_name.lower() for x in ["qwen", "gpt-oss"])
+                        dynamic_max_tokens = 850 if is_strict_otpm else 2500
+
                         completion = client.chat.completions.create(
                             model=model_name,
                             messages=groq_payload,
                             temperature=0.3,
-                            max_tokens=750,
+                            max_tokens=dynamic_max_tokens,
                         )
-                        reply_text = completion.choices[0].message.content
+                        choice = completion.choices[0]
+                        reply_text = choice.message.content or ""
+
+                        # AUTO-CONTINUE: Jika terpotong karena batas token (finish_reason == "length"), sambung otomatis!
+                        if getattr(choice, "finish_reason", "") == "length" and reply_text:
+                            try:
+                                cont_payload = groq_payload + [
+                                    {"role": "assistant", "content": reply_text},
+                                    {
+                                        "role": "user",
+                                        "content": "Lanjutkan langsung kalimat/langkah terakhir yang terpotong di atas sampai selesai tuntas tanpa mengulang penjelasan awal."
+                                    }
+                                ]
+                                cont_comp = client.chat.completions.create(
+                                    model=model_name,
+                                    messages=cont_payload,
+                                    temperature=0.3,
+                                    max_tokens=dynamic_max_tokens,
+                                )
+                                cont_text = cont_comp.choices[0].message.content or ""
+                                if cont_text:
+                                    reply_text = reply_text.rstrip() + "\n" + cont_text.lstrip()
+                            except Exception:
+                                pass
+
                         if reply_text:
                             engine_label = f"Groq Vision-OCR ({model_name})" if image_bytes_list else f"Groq ({model_name})"
                             return reply_text, engine_label
@@ -289,6 +336,9 @@ def generate_multimodal_response(
             except Exception as e:
                 errors_log.append(f"Groq Client Error: {e}")
 
+    # ---------------------------------------------------------
+    # C. FALLBACK GOOGLE GEMINI TEKS (KAPASITAS 4096 TOKEN)
+    # ---------------------------------------------------------
     if gemini_key_list:
         gem_keys = list(gemini_key_list)
         random.shuffle(gem_keys)
@@ -308,7 +358,10 @@ def generate_multimodal_response(
                         response = client.models.generate_content(
                             model=model_name,
                             contents=history_text,
-                            config=types.GenerateContentConfig(temperature=0.3)
+                            config=types.GenerateContentConfig(
+                                temperature=0.3,
+                                max_output_tokens=4096
+                            )
                         )
                         if response and response.text:
                             return response.text, f"Google ({model_name})"
@@ -321,7 +374,7 @@ def generate_multimodal_response(
     raise RuntimeError(" | ".join(errors_log[-5:]) if errors_log else "Pastikan API Key aktif di Streamlit Secrets.")
 
 # ==========================================
-# 7. SIDEBAR: LOGO & INFO KARYA (MENU MODUL DIHAPUS)
+# 7. SIDEBAR: LOGO & INFO KARYA
 # ==========================================
 with st.sidebar:
     if LOGO_PATH:
@@ -480,7 +533,7 @@ if user_text or attached_files:
                 st.warning(f"Gagal membaca file {fname}: {e}")
 
     display_text = user_text if user_text else "*[Mengirim lampiran untuk dianalisis]*"
-    ai_prompt_text = user_text if user_text else "Tolong analisis lampiran yang saya kirimkan ini secara detail dan jelaskan poin-poin pentingnya."
+    ai_prompt_text = user_text if user_text else "Tolong analisis lampiran yang saya kirimkan ini secara tuntas dan jelaskan poin-poin pentingnya."
 
     if extracted_docs_text:
         ai_prompt_text = f"{ai_prompt_text}\n{extracted_docs_text}"
@@ -505,7 +558,7 @@ if user_text or attached_files:
             st.error("⚠️ API Key belum terbaca di Streamlit Secrets.")
     else:
         with st.chat_message("assistant", avatar=assistant_avatar):
-            with st.spinner("RA'BUNG-NET AI sedang memindai isi gambar/lampiran & menyusun penjelasan..."):
+            with st.spinner("RA'BUNG-NET AI sedang menyusun penjelasan lengkap..."):
                 try:
                     full_system_instruction = BASE_SYSTEM_PROMPT
                     recent_messages = [dict(m) for m in st.session_state.messages[-3:]]
